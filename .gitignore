@@ -1,33 +1,22 @@
 # Build output
 build/
 
-# Vendored toolchains / SDKs and internal tooling
+# Local toolchain / Pico SDK install
 tools/
-.banyancode/
-
-# Host simulator
-sim/
-
-# Design references (kept out of the repo)
-docs/design.md
-docs/ui_spec.md
-docs/screenshots/
-
-# Host-only unit tests
-lib/gfx/test/
-lib/input/test/
 
 # Python
 __pycache__/
 *.pyc
 
-# Firmware artifacts (release copies in dist/ are kept)
+# Firmware artifacts
 *.elf
 *.bin
 *.hex
 *.map
 *.dis
 *.uf2
+
+# prebuilt firmware in dist/ is kept
 !dist/*.uf2
 
 # Editor / OS junk
