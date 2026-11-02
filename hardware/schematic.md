@@ -58,7 +58,7 @@ ERC was last run from the generator's output. After that, the title block and no
 
 ## How the files were made
 
-The KiCad files were generated from Python, **which is not committed**. It lives in `D:\362Project\hw_gen\`, excluded through `.git/info/exclude`, to match the user's earlier wish that the repo hold only main project files. If you're on another machine, you don't have it: edit the KiCad files directly.
+The KiCad files were generated from the Python in `hw_gen/` at the repo root, committed on `temp` at the user's request. Run it with Python 3.11 and KiCad 10 installed. The user wanted `main` to hold only main project files, so ask before merging `hw_gen/` there.
 
 | File | Purpose |
 |---|---|

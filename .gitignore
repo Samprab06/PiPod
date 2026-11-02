@@ -31,3 +31,8 @@ hardware/*.lck
 hardware/*.kicad_prl
 hardware/fp-info-cache
 hardware/*-backups/
+
+# Generator output
+hw_gen/_selftest/
+hw_gen/_parts.csv
+hw_gen/_erc.json

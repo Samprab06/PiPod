@@ -90,7 +90,7 @@ These can change the schematic, so do them before layout.
 - **Reference designators aren't sequential.** They're grouped by sheet. Annotate only if you want to, and if so, update references in the docs and sheet notes, which name many parts (such as "remove R70-R74").
 - **Each sheet's notes** explain the values and removal steps. Update them when you change a circuit.
 - **Fields:** each part has MPN, Manufacturer and Verification fields. Keep them filled in, since the BOM depends on them.
-- **Edit the KiCad files directly.** The scripts that made the draft aren't in this repo, so ignore any mention of regenerating unless you've been given them. Once you've edited in KiCad, nobody should regenerate, because that would overwrite your work.
+- **Edit the KiCad files directly.** The scripts that made the draft are in `hw_gen/`, but you don't need them. Once you've edited in KiCad, nobody should run them again, because `design.py` and `verify.py` regenerate the sheets and would overwrite your work.
 - **Keep the BOM current by hand.** `PiPod_BOM.csv` won't update itself. KiCad's own BOM export is a useful cross-check.
 
 ## Rules to keep when changing circuits
