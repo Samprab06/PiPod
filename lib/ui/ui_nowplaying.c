@@ -100,13 +100,23 @@ static gfx_rect_t title_rect(void) {
     return r;
 }
 
+/** Queue label + title + artist + album: everything that changes with a track.
+ *  The art, reflection and progress bar have their own rects. */
+static gfx_rect_t track_text_rect(void) {
+    gfx_rect_t r = {UI_TITLE_COL_X, 48, UI_TITLE_COL_W, 98};
+    return r;
+}
+
 static gfx_rect_t progress_rect(void) {
     gfx_rect_t r = {PROGRESS_X, PROGRESS_Y, PROGRESS_W, PROGRESS_H};
     return r;
 }
 
-static gfx_rect_t art_rect(void) {
-    gfx_rect_t r = {ART_X - 2, ART_Y - 2, ART_SIZE + 4, ART_SIZE + 4};
+/* The album art itself (inside the frame). This is the rectangle a precomputed
+ * flash image can be sent from: the 1 px frame ring is static and lies just
+ * outside it, so it never needs repainting when the image changes. */
+static gfx_rect_t art_image_rect(void) {
+    gfx_rect_t r = {ART_X, ART_Y, ART_SIZE, ART_SIZE};
     return r;
 }
 
@@ -335,8 +345,33 @@ void ui_nowplaying_wheel(const ui_np_t *np, int ticks, uint32_t now_us) {
     ui_shared_post_simple(UI_CMD_SET_VOLUME, vol);
 }
 
-void ui_nowplaying_click(const ui_np_t *np, uint32_t now_us) {
-    if (np == NULL || !np->has_track) {
+void ui_nowplaying_direct_layers(const ui_np_t *np, const ui_screen_t *s) {
+    (void)s;
+    const gfx_image_t *img = album_art(np);
+    /* Only a native 120x120 image maps 1:1 onto the art rectangle; anything
+     * else is scaled by gfx_draw_image_scaled() and stays on the strip path. */
+    if (img == NULL || img->pixels == NULL || img->width != ART_SIZE || img->height != ART_SIZE) {
+        return;
+    }
+    gfx_rect_t r = art_image_rect();
+    (void)gfx_direct_add(r, img->pixels, img->width);
+}
+
+void ui_nowplaying_invalidate_view(const ui_np_t *np, const ui_screen_t *s) {
+    (void)s;
+    gfx_rect_t content = {0, UI_CONTENT_Y, UI_SCREEN_W, UI_CONTENT_H};
+    ui_invalidate(content);
+
+    /* The art rectangle is added exactly and last: the content rect above
+     * repaints the same pixels through the strip path, so the image can then be
+     * sent straight from flash without a stale stripe. */
+    const gfx_image_t *img = album_art(np);
+    if (img != NULL && img->pixels != NULL && img->width == ART_SIZE && img->height == ART_SIZE) {
+        ui_invalidate_exact(art_image_rect());
+    }
+}
+
+void ui_nowplaying_click(const ui_np_t *np, uint32_t now_us) {    if (np == NULL || !np->has_track) {
         return;
     }
     if (s_np.scrubbing) {
@@ -379,13 +414,16 @@ void ui_nowplaying_step(const ui_np_t *np, ui_screen_t *s, float dt_s, uint32_t 
         s_np.vol_value = np->volume;
         s_np.vol_seen = np->volume;
         s_np.scrubbing = false;
-        ui_invalidate(title_rect());
-        ui_invalidate(art_rect());
+        ui_invalidate(track_text_rect());
         ui_invalidate(reflection_rect());
         ui_invalidate(progress_rect());
         if (had) {
             ui_invalidate(progress_rect());
         }
+        /* Only the image changes; invalidate it exactly and last so it can go
+         * straight from flash instead of through the strip buffers. The frame
+         * ring around it is static. */
+        ui_invalidate_exact(art_image_rect());
     }
 
     if (!np->has_track) {

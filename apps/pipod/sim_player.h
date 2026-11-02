@@ -13,12 +13,19 @@
 
 #include <stdint.h>
 
+#include "media_library.h"
+#include "ui.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /** Initial volume used by both the UI config and the fake engine. */
 #define SIM_DEMO_INITIAL_VOLUME 60
+
+/** Select the library the fake engine queues from. @p media may be NULL, in
+ *  which case the built-in sim_library is used. Call before sim_player_init(). */
+void sim_player_set_library(const ui_library_t *lib, media_library_t *media);
 
 /** Reset state and publish initial now-playing/volume/modes/battery values.
  *  Call after ui_init() has run on the UI core. */

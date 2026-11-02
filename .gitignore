@@ -16,8 +16,9 @@ __pycache__/
 *.dis
 *.uf2
 
-# prebuilt firmware in dist/ is kept
+# prebuilt firmware + song pack in dist/ are kept
 !dist/*.uf2
+!dist/*.bin
 
 # Editor / OS junk
 .vscode/

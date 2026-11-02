@@ -21,6 +21,7 @@
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include "ui_anim.h"
+#include "ui_assets.h"
 #include "ui_widgets.h"
 
 #define UI_FPS_DEFAULT 30u
@@ -108,6 +109,12 @@ void ui_invalidate(gfx_rect_t r) {
     gfx_invalidate(r);
 }
 
+void ui_invalidate_exact(gfx_rect_t r) {
+    gfx_invalidate_exact(r);
+}
+
+static void invalidate_content_view(void);
+
 static void transition_finish(void) {
     if (!s_tr.active) {
         return;
@@ -127,12 +134,17 @@ static void apply_snapshot(void) {
         return;
     }
 
-    if (s_np.track_seq != s_prev.track_seq) {
+    /* Track changes on Now Playing are invalidated piecewise by
+     * ui_nowplaying_step() (title, art, reflection, progress), which keeps the
+     * art rectangle separate so it can be sent from flash. Every other screen
+     * only needs the content repainted. */
+    const bool np_top = (s_depth > 0u) && (s_stack[s_depth - 1u].kind == UI_SCR_NOW_PLAYING);
+    const bool track_changed = (s_np.track_seq != s_prev.track_seq);
+    if (track_changed) {
         ui_nowplaying_reset();
-        ui_invalidate(content_rect());
     }
-    if (s_np.has_track != s_prev.has_track) {
-        ui_invalidate(content_rect());
+    if ((track_changed || s_np.has_track != s_prev.has_track) && !np_top) {
+        invalidate_content_view();
     }
     if (s_np.play != s_prev.play) {
         ui_invalidate(ui_rect_play_glyph());
@@ -351,7 +363,7 @@ ui_screen_t *ui_nav_push(ui_screen_kind_t kind) {
     ui_menu_screen_reset(s);
 
     ui_invalidate(content_rect());
-    ui_invalidate(ui_rect_title());
+    gfx_invalidate_exact(ui_rect_title());
     return s;
 }
 
@@ -384,7 +396,7 @@ void ui_nav_back(void) {
     s_depth--;
 
     ui_invalidate(content_rect());
-    ui_invalidate(ui_rect_title());
+    gfx_invalidate_exact(ui_rect_title());
 }
 
 void ui_nav_home(void) {
@@ -399,7 +411,7 @@ void ui_nav_home(void) {
     s_depth = 1;
 
     ui_invalidate(content_rect());
-    ui_invalidate(ui_rect_title());
+    gfx_invalidate_exact(ui_rect_title());
 }
 
 /* ------------------------------------------------------------------------- */
@@ -427,9 +439,15 @@ static void step_animations(uint32_t now) {
             s_tr.active = false;
         }
         if ((s_tr.t < 0.5f) != before) {
-            ui_invalidate(ui_rect_title());
+            gfx_invalidate_exact(ui_rect_title());
         }
-        ui_invalidate(content_rect());
+        if (s_tr.active) {
+            ui_invalidate(content_rect());
+        } else {
+            /* The slide ended exactly at x offset 0: repaint the settled screen
+             * with its direct layers instead of one big strip rectangle. */
+            invalidate_content_view();
+        }
     }
 }
 
@@ -555,6 +573,83 @@ static void update_perf_overlay(uint32_t now) {
 }
 
 /* ------------------------------------------------------------------------- */
+/* Direct layers (flash -> panel DMA)                                        */
+/* ------------------------------------------------------------------------- */
+
+/* Invalidate the content area of the settled top screen. Static menu rows and
+ * the album art are invalidated exactly so gfx_render() can send them from
+ * flash; everything that animates keeps the plain content rectangle. */
+static void invalidate_content_view(void) {
+    const ui_screen_t *top = &s_stack[s_depth - 1u];
+    switch (top->kind) {
+    case UI_SCR_NOW_PLAYING:
+        ui_nowplaying_invalidate_view(&s_np, top);
+        break;
+    case UI_SCR_ABOUT:
+        ui_invalidate(content_rect());
+        break;
+    default:
+        ui_menu_invalidate_view(&s_np, top);
+        break;
+    }
+}
+
+void ui_invalidate_view_all(void) {
+    ui_invalidate_status();
+    if (s_tr.active) {
+        /* Both screens are on screen, offset horizontally: no direct layers. */
+        ui_invalidate(content_rect());
+        return;
+    }
+    invalidate_content_view();
+}
+
+void ui_build_direct_layers(void) {
+    gfx_direct_begin_frame();
+    if (!s_cfg.ready) {
+        return;
+    }
+
+    /* Status bar: only the title box is precomputed. With the FPS/CPU overlay
+     * on, the overlay rectangle overlaps the title box and is drawn on top, so
+     * the title falls back to strips. */
+    if (!ui_settings_perf_overlay()) {
+        const gfx_image_t *img = ui_asset_status_title(current_title());
+        if (img != NULL) {
+            gfx_rect_t r = {UI_ASSET_TITLE_X, UI_ASSET_TITLE_Y, (int16_t)img->width,
+                            (int16_t)img->height};
+            (void)gfx_direct_add(r, img->pixels, img->width);
+        }
+    }
+
+    /* Content: nothing may move, or the layer would not match the scene drawn
+     * at a horizontal offset. */
+    if (s_tr.active) {
+        return;
+    }
+    const ui_screen_t *top = &s_stack[s_depth - 1u];
+    switch (top->kind) {
+    case UI_SCR_NOW_PLAYING:
+        ui_nowplaying_direct_layers(&s_np, top);
+        break;
+    case UI_SCR_ABOUT:
+        break;
+    default:
+        ui_menu_direct_layers(&s_np, top);
+        break;
+    }
+}
+
+void ui_render_now(void) {
+    if (!s_cfg.ready) {
+        return;
+    }
+    ui_build_direct_layers();
+    gfx_render(scene_draw, NULL);
+    ili9341_wait_idle();
+}
+
+/* ------------------------------------------------------------------------- */
 /* Public API                                                                */
 /* ------------------------------------------------------------------------- */
 
@@ -657,7 +752,7 @@ void ui_init(const ui_config_t *cfg) {
     s_cfg.ready = true;
 
     /* Paint the initial screen so the panel is usable before ui_run(). */
-    gfx_invalidate_all();
+    ui_invalidate_view_all();
     ui_task();
 }
 
@@ -697,6 +792,7 @@ void ui_task(void) {
         ili9341_get_stats(&disp0);
         gfx_render_get_stats(&g0);
 
+        ui_build_direct_layers();
         gfx_render(scene_draw, NULL);
         ili9341_wait_idle();
 

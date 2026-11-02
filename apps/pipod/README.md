@@ -1,8 +1,13 @@
-# apps/pipod — simulated PiPod UI
+# apps/pipod — PiPod UI on the real media pack
 
-Runs the real `lib/ui` on the Purdue Proton with a fake music library and a
-fake audio engine, so the screens, input and audio-isolation budget can be
-checked before the SD card and I2S code exist.
+Runs the real `lib/ui` on the Purdue Proton, reads the real media library out
+of the 14 MB flash media pack (`lib/media/media_library.h`), and keeps the fake
+audio engine, so the screens, input and audio-isolation budget can be checked
+before I2S/decoder code exists. When no pack (or no usable track) is present
+the app falls back to the built-in demo tables in `sim_library.c`.
+
+The first boot after a pack change scans it once; later boots load the cached
+index. See "Media pack library" below.
 
 ## Build
 
@@ -18,8 +23,10 @@ cmake --build build --target pipod
 ```
 
 Outputs land in `build/apps/pipod/` (`pipod.elf`, `.uf2`, `.bin`,
-`.hex`, `.dis`). `lib/ui` must be present: the app is skipped at configure
-time when the `ui` target does not exist yet.
+`.hex`, `.dis`). `lib/ui`, `lib/media` and `lib/flashstream` must be present;
+the app is skipped at configure time when those targets do not exist yet. The
+POST_BUILD size check fails the build if `pipod` would grow past 1 MB (the
+media pack starts at flash offset 0x100000).
 
 ## Flash and run
 
@@ -29,6 +36,11 @@ Hold BOOTSEL, plug the board in, then either drag
 ```sh
 picotool load -x build/apps/pipod/pipod.elf
 ```
+
+Then copy `dist/test_songs.uf2` to the same drive (it lands at flash offset
+0x100000 and does not touch the firmware). The pack can be replaced at any
+time the same way; the cache key changes with the pack, so the next boot
+rescans.
 
 The on-board debug probe exposes UART0 (GP0 TX, GP1 RX) at **115200 8N1**.
 Open it with any serial terminal (`putty -serial COMx`, `screen /dev/ttyACM0
@@ -102,7 +114,57 @@ Printed every 5 s from core 0:
   blocking 115200-baud UART output itself never shows up as audio jitter.
 - `player` — current queue position, track and elapsed/duration.
 
-## Simulated library
+## Media pack library
+
+At boot, on core 0 and **before core 1 starts** (flash writes stall XIP, so
+they must not overlap the UI):
+
+1. `media_pack_open()` validates the PPAK pack at flash offset 0x100000.
+2. If the scan cache already holds this pack's key, the index is loaded from
+   the cache: no tags are parsed and no JPEG is decoded (about 1 ms).
+3. Otherwise every file is parsed once, one cover per album is decoded to
+   120x120 RGB565, and the index + covers are written to the 1 MB cache at
+   0xF00000 and committed.
+4. `media_library_ui()` is handed to `ui_init`; it serves artists, albums,
+   songs ("All Songs" playlist), titles and album art. `sim_player.c` uses
+   `media_library_track()` for real title/artist/album/duration/art.
+
+The UART prints one `[scan] ...` line per file (format, title, artist, album,
+duration, sample rate, channels, bitrate, art type/result), then:
+
+```
+[media] full scan: 14 tracks, 14 albums, 14 artists from 14 files
+[media] scan time <N> ms (UART report included), parses 14, art decodes 10,
+        cached covers 14 (7 placeholders), cache 413696 B
+```
+
+and a second boot of the same pack prints `cache hit` with `parses 0` and a
+0-1 ms scan on the host. On the board the first scan is dominated by the
+~404 KB of cover writes (about 100 flash sector erases + 1600 page programs,
+several seconds); the scan report and timings include the blocking UART output,
+so the pure scan is faster than the printed number.
+
+Without a pack (or with a pack containing no parseable audio) the app prints
+`[media] no media pack ...; using the demo library` and uses the built-in
+tables (8 artists, 14 albums, 166 songs, 3 playlists).
+
+Audio is still simulated: no decoder or I2S is wired. The byte-stream contract
+for the audio workstream is `lib/media/media_stream.h` and
+[docs/api.md](../../docs/api.md) "Audio integration".
+
+### Making a pack
+
+```
+python scripts/gen_test_media.py            # only needed once (ffmpeg)
+python scripts/pack_media.py --in test_media --out test_songs.bin \
+       --uf2 test_songs.uf2
+```
+
+`pack_media.py` also accepts any folder of `.mp3/.flac/.wav/.ogg/.opus` files;
+the capacity is 14 MB (`MEDIA_PACK_MAX`). Drag the UF2 onto the board, or
+`picotool load -x test_songs.uf2`.
+
+## Simulated library (fallback)
 
 8 artists, 14 albums, 166 songs (2:30–6:00) and 3 playlists. All names,
 durations and playlist membership are fictional and computed from the item id
@@ -111,9 +173,10 @@ generated 120x120 covers in `lib/ui_demo_assets`.
 
 ## Layout
 
-- `sim_library.c` — `ui_library_t` provider (count / get_item / get_album_art)
-- `sim_player.c` — drains `ui_poll_command()`, keeps a play queue, advances
-  in real time, reports via `ui_set_*()`
+- `main.c` — display init, media scan, UI on core 1, input polling, reporting
+- `sim_library.c` — fallback `ui_library_t` provider (const tables)
+- `sim_player.c` — library-agnostic fake engine: drains `ui_poll_command()`,
+  keeps a play queue, uses `media_library_track()` (or `sim_song_info()`),
+  advances in real time, reports via `ui_set_*()`
 - `audio_load_sim.c` — 1 ms repeating-timer jitter meter + duty-cycled core-0
   busy work
-- `main.c` — display init on core 0, UI on core 1, input polling, reporting

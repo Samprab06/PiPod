@@ -15,6 +15,7 @@
 
 #include "fonts.h"
 #include "gfx_render.h"
+#include "ui_assets.h"
 
 /* ------------------------------------------------------------------------- */
 /* Geometry and text                                                         */
@@ -141,11 +142,39 @@ gfx_rect_t ui_rect_status(void) {
     return r;
 }
 
-gfx_rect_t ui_rect_title(void) {
-    /* ui_text_center() draws the title clipped to 150 px centred on x = 160,
-     * i.e. x 85..235. Invalidate that whole area, not a narrower box. */
-    gfx_rect_t r = {85, 2, 150, 18};
+gfx_rect_t ui_rect_status_left(void) {
+    /* Everything left of the title box: play glyph and the FPS overlay. */
+    gfx_rect_t r = {0, 0, UI_ASSET_TITLE_X, UI_STATUS_H};
     return r;
+}
+
+gfx_rect_t ui_rect_status_right(void) {
+    /* Everything right of the title box: shuffle, repeat and battery. */
+    gfx_rect_t r = {UI_ASSET_TITLE_X + UI_ASSET_TITLE_W, 0,
+                    UI_SCREEN_W - (UI_ASSET_TITLE_X + UI_ASSET_TITLE_W), UI_STATUS_H};
+    return r;
+}
+
+gfx_rect_t ui_rect_title(void) {
+    /* The title box is a precomputed asset (lib/ui/assets) and the only status
+     * bar rectangle the direct flash path can send; keep the geometry in sync
+     * with the asset generator through the UI_ASSET_* constants. */
+    gfx_rect_t r = {UI_ASSET_TITLE_X, UI_ASSET_TITLE_Y, UI_ASSET_TITLE_W, UI_ASSET_TITLE_H};
+    return r;
+}
+
+void ui_invalidate_status(void) {
+    /* Rows above and below the title box first (plain merge), then the three
+     * side-by-side pieces exactly: merging them would make the union wider than
+     * the title asset and silently disable the direct path. */
+    gfx_rect_t top = {UI_ASSET_TITLE_X, 0, UI_ASSET_TITLE_W, UI_ASSET_TITLE_Y};
+    gfx_rect_t bottom = {UI_ASSET_TITLE_X, UI_ASSET_TITLE_Y + UI_ASSET_TITLE_H, UI_ASSET_TITLE_W,
+                         UI_STATUS_H - (UI_ASSET_TITLE_Y + UI_ASSET_TITLE_H)};
+    ui_invalidate(top);
+    ui_invalidate(bottom);
+    gfx_invalidate_exact(ui_rect_status_left());
+    gfx_invalidate_exact(ui_rect_status_right());
+    gfx_invalidate_exact(ui_rect_title());
 }
 
 gfx_rect_t ui_rect_play_glyph(void) {

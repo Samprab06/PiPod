@@ -37,6 +37,7 @@ Outputs:
 | `lib/gfx/fonts/fonts.h`, `lib/gfx/fonts/fonts.cmake` | `regen_assets.py` (from `font_specs.py`) |
 | `assets/demo_art/art_0.png` .. `art_5.png` | `gen_demo_art.py` |
 | `lib/ui_demo_assets/art_0.c` .. `art_5.c`, `demo_art.h`, `demo_art.c` | `gen_demo_art.py` |
+| `lib/ui/assets/ui_assets.c`, `ui_assets.h` | `gen_ui_assets.py` |
 | `build/font_preview.png` | `gen_font_preview.py` |
 
 `scripts/font_specs.py` is the single source of truth for the font instances
@@ -119,6 +120,36 @@ C. If the preview looks right, the packed tables are right.
 ```bash
 python -I scripts/gen_font_preview.py --out build/font_preview.png
 ```
+
+## gen_ui_assets.py
+
+Precomputes the UI images that the display driver streams straight from flash
+(the RP2350 XIP stream path, see `lib/flashstream`). The pixels must be
+**identical** to what the strip renderer draws, so the script does not use
+Pillow for compositing: it re-implements the exact integer maths of `lib/gfx`
+(`gfx_fill_gradient_v`, `gfx_blend` / 4bpp glyph coverage, `gfx_fill_rect`,
+the chevron) and reuses the same `gen_font.build_font()` rasteriser as the
+device fonts.
+
+```bash
+python -I scripts/gen_ui_assets.py            # -> lib/ui/assets/
+```
+
+Assets:
+
+- status bar title box, 150x18 at (85,2), one per static screen title — the
+  only status-bar rectangle that is an asset; the left (play/FPS) and right
+  (shuffle/repeat/battery) icon areas stay CPU-drawn because icons are painted
+  on top of their background;
+- static menu rows, 320x27, normal + selected, for the Main and Music menus and
+  the static "About" row of Settings. Rows with a dynamic subtitle (backlight %
+  / On/Off / clock) are not precomputed.
+
+All arrays are `const` (flash) and `__attribute__((aligned(4)))` so the 32-bit
+stream DMA can address them. Total: **359,640 B** of pixel data (9 titles,
+18 rows) plus the `gfx_image_t` descriptors. The host simulator proves identity:
+it repaints each screenshot with the direct path disabled and compares the
+framebuffers (`[verify] ... direct == strip`).
 
 ## gen_image.py
 

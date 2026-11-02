@@ -44,6 +44,7 @@ typedef struct {
     uint pin_rst;    /**< Hardware reset GPIO (active low). */
     uint pin_bl;     /**< Backlight PWM GPIO. */
     uint32_t spi_hz; /**< Requested SPI clock in Hz. */
+    bool fast_pins;  /**< 12 mA fast-slew drive on SCK/MOSI/CS/DC (default true). */
 } ili9341_config_t;
 
 /** Transfer statistics, useful for benchmarks. */
@@ -51,6 +52,8 @@ typedef struct {
     uint64_t bytes_sent;   /**< Pixel bytes handed to DMA since the last reset. */
     uint32_t transfers;    /**< Number of DMA transfers started. */
     uint64_t dma_busy_us;  /**< Microseconds spent waiting for DMA to finish. */
+    uint64_t flash_bytes;  /**< Of bytes_sent, bytes moved through the XIP stream (flash -> panel). */
+    uint32_t flash_blits;  /**< ili9341_blit_flash_async() calls that took the stream path. */
 } ili9341_stats_t;
 
 /** Panel readback self-test results (see ili9341_self_test()). */
@@ -78,8 +81,9 @@ void ili9341_default_config(ili9341_config_t *cfg);
  *
  * Performs a hardware reset, the full power/VCOM/gamma/frame-rate init
  * sequence, sets COLMOD to 16-bit RGB565 and landscape BGR MADCTL, releases
- * sleep (120 ms) and turns the display on. Claims one DMA channel and starts
- * the backlight PWM at 100%.
+ * sleep (120 ms) and turns the display on. Claims three DMA channels (strip
+ * blits plus the two used by the flash stream path), applies cfg->fast_pins
+ * and starts the backlight PWM at 100%.
  *
  * The panel is left initialised even when the readback self-test fails, so
  * the caller can retry or ignore the failure.
@@ -101,6 +105,19 @@ bool ili9341_init(const ili9341_config_t *cfg);
  * \return The clock actually achieved by the SPI hardware.
  */
 uint32_t ili9341_set_spi_clock(uint32_t hz);
+
+/**
+ * \brief Select fast or default pad drive on the display control lines.
+ *
+ * At high SPI clocks the SCK edge no longer survives the breadboard wiring
+ * with the default 4 mA / slew-limited pads. This switches SCK, MOSI, CS and
+ * DC to the 12 mA fast-slew pads used by the overclock sweep, and back.
+ * ili9341_init() already applies cfg->fast_pins (true in the board defaults,
+ * i.e. 75 MHz); this call only changes it at runtime.
+ *
+ * \param fast true for 12 mA + fast slew, false for the 4 mA + slow defaults.
+ */
+void ili9341_set_pin_drive(bool fast);
 
 /**
  * \brief Get the current SPI clock.
@@ -171,6 +188,46 @@ void ili9341_blit_async(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const ui
 void ili9341_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color);
 
 /**
+ * \brief Blit RGB565 pixels straight from XIP flash (or RAM) to the panel.
+ *
+ * For a pointer inside the XIP window (0x10000000..0x11000000, 4-byte aligned)
+ * the pixels travel through the RP2350 XIP stream unit: the stream channel
+ * reads the XIP_AUX FIFO into a 2 x 1 KB RAM ring (32-bit, DREQ_XIP_STREAM)
+ * while the SPI channel clocks the other ring half out as 16-bit frames. The
+ * two halves are ping-ponged, and the SPI channel is only started after its
+ * half has been filled.
+ *
+ * The blit claims the single stream unit through lib/flashstream (audio has
+ * priority). If the claim fails, or audio takes the unit while the blit is
+ * running, the function returns false and NOTHING is guaranteed: the caller
+ * must repaint the rectangle with the CPU/strip path (partial pixels may have
+ * been written, so the whole rectangle has to be redrawn).
+ *
+ * Pixels are row-major with a row stride of \p w. A vertical sub-range of a
+ * taller image is blitted by offsetting \p px by rows * w; horizontal clipping
+ * is not supported (the window must match the source exactly).
+ *
+ * The unit is held for one call only and released before returning. Long
+ * blits are split into chunks of at most 8 KB of pixels; at each boundary a
+ * pending audio request makes the call release the unit and yield, so audio
+ * waits at most one chunk (~0.9 ms at 75 MHz).
+ *
+ * A RAM pointer (or an unaligned XIP pointer) takes the plain DMA path of
+ * ili9341_blit_async() and always returns true. The call is synchronous in
+ * both cases: all DMA has completed when it returns.
+ *
+ * \param x Left edge in pixels.
+ * \param y Top edge in pixels.
+ * \param w Width in pixels (also the source stride).
+ * \param h Height in pixels.
+ * \param px w*h RGB565 pixels at an XIP flash or RAM address.
+ * \return true when the pixels were sent; false when the caller must fall back
+ *         to the strip renderer.
+ */
+bool ili9341_blit_flash_async(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                              const uint16_t *px);
+
+/**
  * \brief Block until the DMA transfer is done, the SPI is idle and CS is high.
  *
  * Must be called before reusing a blit source buffer and before changing the
@@ -210,6 +267,32 @@ uint32_t ili9341_read_id(void);
  * \return Register value, or 0 if the driver is not initialised.
  */
 uint8_t ili9341_read_reg8(uint8_t cmd);
+
+/**
+ * \brief Read a rectangle of pixels back through MISO (RAMRD, 0x2E).
+ *
+ * The panel returns 18-bit colour: three bytes per pixel (R, G, B, each in the
+ * upper six bits) after one dummy byte. The bytes are converted back to
+ * RGB565 with r>>3, g>>2, b>>3, so a pixel written as RGB565 reads back
+ * exactly when the write was received correctly. This is the only way to
+ * verify what the panel actually stored, as opposed to what was sent.
+ *
+ * The read runs at 6 MHz or lower and the previous clock is restored before
+ * returning. \p out must hold w*h pixels. The dummy-bit alignment detected by
+ * ili9341_self_test() is reused; the self-test is run automatically when it
+ * has not been called yet.
+ *
+ * \param x Left edge in pixels.
+ * \param y Top edge in pixels.
+ * \param w Width in pixels; must be non-zero.
+ * \param h Height in pixels; must be non-zero.
+ * \param out Destination for w*h RGB565 pixels, row-major.
+ * \return false when the driver is not initialised, an argument is invalid, or
+ *         MISO looks dead (every byte 0x00 or 0xFF). A true result only means
+ *         the read completed; compare the pixels to the expected image to
+ *         judge the link.
+ */
+bool ili9341_read_pixels(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t *out);
 
 /**
  * \brief Probe the panel over MISO and report what the readback shows.

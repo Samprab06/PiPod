@@ -20,6 +20,7 @@
 
 #include "fonts.h"
 #include "ui_anim.h"
+#include "ui_assets.h"
 #include "ui_widgets.h"
 
 /* ------------------------------------------------------------------------- */
@@ -411,6 +412,92 @@ void ui_menu_invalidate_row(const ui_screen_t *s, uint32_t index) {
     const int y = UI_LIST_Y + (int)index * UI_ROW_H - (int)(s->scroll_px + 0.5f);
     gfx_rect_t r = {0, (int16_t)y, UI_SCREEN_W, UI_ROW_H};
     ui_invalidate(r);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Direct layers (flash -> panel DMA)                                        */
+/* ------------------------------------------------------------------------- */
+
+/* Static menus are the ones whose rows have precomputed assets. They never
+ * scroll, so a row sits at a fixed y; the highlight must be exactly on a row,
+ * otherwise the moving gradient has to be strip-rendered. */
+static bool menu_rows_settled(const ui_screen_t *s) {
+    if (s->kind != UI_SCR_MAIN && s->kind != UI_SCR_MUSIC && s->kind != UI_SCR_SETTINGS) {
+        return false;
+    }
+    if (s->scroll != 0 || s->scroll_px != 0.0f) {
+        return false;
+    }
+    const float target = (float)s->selected * (float)UI_ROW_H;
+    return s->hl_y == target;
+}
+
+/* The precomputed asset for a row, or NULL when the row must be drawn (library
+ * row, dynamic subtitle, unknown label). */
+static const gfx_image_t *menu_row_asset(const ui_np_t *np, const ui_screen_t *s, uint32_t index,
+                                         ui_row_t *row) {
+    menu_row_view(np, s, index, row);
+    if (row->subtitle != NULL) {
+        return NULL; /* dynamic right-hand value: never precomputed */
+    }
+    return ui_asset_menu_row(row->title, (row->flags & UI_ROW_CHEVRON) != 0u,
+                             index == s->selected);
+}
+
+void ui_menu_direct_layers(const ui_np_t *np, const ui_screen_t *s) {
+    if (np == NULL || s == NULL || !menu_rows_settled(s)) {
+        return;
+    }
+    const uint32_t count = menu_row_count(np, s);
+    for (uint32_t i = 0; i < count && i < (uint32_t)UI_ROWS_VISIBLE; i++) {
+        ui_row_t row;
+        const gfx_image_t *img = menu_row_asset(np, s, i, &row);
+        if (img == NULL) {
+            continue;
+        }
+        gfx_rect_t r = {0, (int16_t)(UI_LIST_Y + (int)i * UI_ROW_H), UI_ASSET_ROW_W,
+                        UI_ASSET_ROW_H};
+        (void)gfx_direct_add(r, img->pixels, img->width);
+    }
+}
+
+void ui_menu_invalidate_view(const ui_np_t *np, const ui_screen_t *s) {
+    if (np == NULL || s == NULL || !menu_rows_settled(s)) {
+        ui_invalidate(content_rect());
+        return;
+    }
+
+    const uint32_t count = menu_row_count(np, s);
+
+    /* Background above and below the rows first: those merge normally. */
+    gfx_rect_t top = {0, UI_CONTENT_Y, UI_SCREEN_W, (int16_t)(UI_LIST_Y - UI_CONTENT_Y)};
+    if (top.h > 0) {
+        ui_invalidate(top);
+    }
+    const int rows_end = UI_LIST_Y + (int)count * UI_ROW_H;
+    if (rows_end < UI_SCREEN_H) {
+        gfx_rect_t bottom = {0, (int16_t)rows_end, UI_SCREEN_W, (int16_t)(UI_SCREEN_H - rows_end)};
+        ui_invalidate(bottom);
+    }
+
+    /* Rows without an asset first (they may merge), then the precomputed rows
+     * as exact rectangles: gfx_invalidate_exact never merges, so the geometry
+     * that matches the asset survives and gfx_render can send it from flash. */
+    uint32_t i;
+    for (i = 0; i < count && i < (uint32_t)UI_ROWS_VISIBLE; i++) {
+        ui_row_t row;
+        if (menu_row_asset(np, s, i, &row) == NULL) {
+            gfx_rect_t r = {0, (int16_t)(UI_LIST_Y + (int)i * UI_ROW_H), UI_SCREEN_W, UI_ROW_H};
+            ui_invalidate(r);
+        }
+    }
+    for (i = 0; i < count && i < (uint32_t)UI_ROWS_VISIBLE; i++) {
+        ui_row_t row;
+        if (menu_row_asset(np, s, i, &row) != NULL) {
+            gfx_rect_t r = {0, (int16_t)(UI_LIST_Y + (int)i * UI_ROW_H), UI_SCREEN_W, UI_ROW_H};
+            gfx_invalidate_exact(r);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------------- */

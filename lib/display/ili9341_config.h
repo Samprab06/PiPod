@@ -40,8 +40,19 @@ extern "C" {
 #define ILI9341_PIN_BL 38
 #endif
 
+/* 75 MHz is clk_peri / 2 at the stock 150 MHz: the fastest rate the PL022 can
+ * produce. The panel is specified at 10 MHz, so this is an overclock that the
+ * Proton hardware runs reliably with fast pad drive (see docs/performance.md).
+ * Runtime rates stay available through ili9341_set_spi_clock(). */
 #ifndef ILI9341_SPI_HZ
-#define ILI9341_SPI_HZ 37500000
+#define ILI9341_SPI_HZ 75000000
+#endif
+
+/* Fast (12 mA, fast slew) pad drive on SCK/MOSI/CS/DC, needed above ~37.5 MHz
+ * on the breadboard wiring. ili9341_default_config() enables it; the runtime
+ * switch stays available through ili9341_set_pin_drive(). */
+#ifndef ILI9341_FAST_PINS
+#define ILI9341_FAST_PINS 1
 #endif
 
 #ifndef ILI9341_WIDTH

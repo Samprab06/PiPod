@@ -20,10 +20,14 @@ add_compile_options(-Wall -Wextra)
 add_subdirectory(lib/display)
 
 # Optional layers owned by other workstreams: only build them when present.
-foreach(layer lib/gfx lib/ui lib/input lib/ui_demo_assets apps/pipod)
+add_subdirectory(third_party/tjpgd)
+
+foreach(layer lib/gfx lib/flashstream lib/media lib/ui lib/input lib/ui_demo_assets apps/pipod)
     if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/${layer}/CMakeLists.txt)
         add_subdirectory(${layer})
     endif()
 endforeach()
 
 add_subdirectory(apps/display_test)
+add_subdirectory(apps/spi_overclock)
+add_subdirectory(apps/motion_test)

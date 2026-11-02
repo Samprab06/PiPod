@@ -73,10 +73,20 @@ void ui_draw_status_bar(gfx_canvas_t *c, const ui_status_t *st);
 /* Status bar invalidation helpers. */
 gfx_rect_t ui_rect_status(void);
 gfx_rect_t ui_rect_title(void);
+gfx_rect_t ui_rect_status_left(void);
+gfx_rect_t ui_rect_status_right(void);
 gfx_rect_t ui_rect_play_glyph(void);
 gfx_rect_t ui_rect_mode_icons(void);
 gfx_rect_t ui_rect_battery(void);
 gfx_rect_t ui_rect_perf(void);
+
+/**
+ * @brief Invalidate the whole status bar as the three side-by-side pieces.
+ *
+ * The title box is a precomputed asset, so its rectangle is invalidated
+ * exactly (no merging) and only the left/right icon areas are strip-rendered.
+ */
+void ui_invalidate_status(void);
 
 /** @brief Play triangle (playing) or pause bars (not playing). */
 void ui_draw_glyph_play(gfx_canvas_t *c, int x, int y, bool playing, gfx_color_t col);

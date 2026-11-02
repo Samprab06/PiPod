@@ -8,4 +8,5 @@ target_link_libraries(ili9341 PUBLIC
     hardware_dma
     hardware_pwm
     hardware_gpio
+    flashstream
 )

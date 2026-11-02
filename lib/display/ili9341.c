@@ -11,15 +11,32 @@
  *   - The data size, DC and CS only change when the SPI is idle.
  *   - Pixels go out through one DMA channel fed by the SPI TX DREQ; completion
  *     is polled, no interrupt is used.
+ *
+ * Flash path (ili9341_blit_flash_async):
+ *   - The RP2350 XIP stream unit reads flash words into the XIP_AUX FIFO
+ *     without touching the CPU or the code cache. One DMA channel moves those
+ *     32-bit words into one half of a 2 x 1 KB RAM ring while a second SPI
+ *     channel clocks the other half out.
+ *   - A 32-bit little-endian flash word holds pixel 0 in bits 15:0 and pixel 1
+ *     in bits 31:16; the DMA stores it little-endian, so halfword 0 of RAM is
+ *     pixel 0 and halfword 1 is pixel 1. Both go out as 16-bit SPI frames MSB
+ *     first, exactly like ili9341_blit_async() sends a uint16_t pixel.
+ *   - The SPI channel is only started after the stream channel has finished
+ *     filling its half (and the next half is filled while the SPI runs), so
+ *     the SPI can never read unfilled data.
  */
 
 #include "ili9341.h"
 
 #include <string.h>
 
+#include "flashstream.h"
 #include "hardware/dma.h"
 #include "hardware/gpio.h"
 #include "hardware/pwm.h"
+#include "hardware/regs/dreq.h"
+#include "hardware/structs/xip_aux.h"
+#include "hardware/structs/xip_ctrl.h"
 #include "pico/stdlib.h"
 
 /* Panel command set (only the commands this driver needs). */
@@ -33,6 +50,7 @@
 #define ILI9341_CMD_CASET 0x2Au
 #define ILI9341_CMD_PASET 0x2Bu
 #define ILI9341_CMD_RAMWR 0x2Cu
+#define ILI9341_CMD_RAMRD 0x2Eu
 #define ILI9341_CMD_MADCTL 0x36u
 #define ILI9341_CMD_VSCRDEF 0x33u
 #define ILI9341_CMD_VSCRSADD 0x37u
@@ -63,6 +81,17 @@
 /* RP2350 DMA transfer counts are limited to 2^28 - 1. */
 #define ILI9341_DMA_MAX_TRANSFER 0x0FFFFFFFu
 
+/* XIP flash window of the 16 MB QSPI chip (addressmap.h XIP_BASE..+16 MB). */
+#define ILI9341_XIP_BASE 0x10000000u
+#define ILI9341_XIP_END 0x11000000u
+
+/* Flash stream path: two 1 KB ring halves (512 32-bit words = 1024 pixels
+ * each) and a 8 KB pixel chunk between audio yield points. */
+#define ILI9341_FLASH_HALF_WORDS 256u
+#define ILI9341_FLASH_HALF_PIXELS (ILI9341_FLASH_HALF_WORDS * 2u)
+#define ILI9341_FLASH_CHUNK_PIXELS 4096u
+#define ILI9341_FLASH_YIELD_US 20000u /* bounded wait to re-claim after a yield */
+
 /* Landscape uses the configured panel size; portrait swaps the axes. */
 #define ILI9341_LANDSCAPE_WIDTH ((uint16_t)ILI9341_WIDTH)
 #define ILI9341_LANDSCAPE_HEIGHT ((uint16_t)ILI9341_HEIGHT)
@@ -72,6 +101,8 @@
 typedef struct {
     ili9341_config_t cfg;
     uint dma_chan;
+    uint dma_stream;      /* XIP stream FIFO -> RAM ring (32-bit). */
+    uint dma_spi_flash;   /* RAM ring -> SPI DR (16-bit). */
     uint32_t spi_hz;
     uint16_t width;
     uint16_t height;
@@ -79,9 +110,12 @@ typedef struct {
     ili9341_rotation_t rotation;
     bool dma_claimed;
     bool dma_pending;
+    bool flash_claimed;   /* dma_stream + dma_spi_flash are ours. */
     bool initialised;
     bool asleep;
     bool read_dummy_bit; /* 8-bit register reads carry one leading dummy bit. */
+    bool selftest_done;  /* ili9341_self_test() has run at least once. */
+    bool miso_alive;     /* last self-test saw a driven MISO. */
     uint8_t madctl;      /* MADCTL value last programmed into the panel. */
     uint8_t data_bits;
     uint64_t dma_start_us;
@@ -89,6 +123,20 @@ typedef struct {
 } ili9341_state_t;
 
 static ili9341_state_t s;
+
+/* Ping-pong ring for the flash stream path: each half is 1 KB (256 words =
+ * 512 pixels), 4-byte aligned for 32-bit DMA. */
+static uint32_t s_flash_ring[2][ILI9341_FLASH_HALF_WORDS];
+
+_Static_assert(sizeof(s_flash_ring[0]) == 1024u, "flash ring half must be 1 KB");
+
+/* Pixel readback: the panel answers RAMRD with three bytes per pixel (18-bit
+ * colour), so one 320-pixel row needs 960 bytes. Reading in 8-row strips keeps
+ * the scratch buffer at 7.7 KB while a whole region still travels in one
+ * uninterrupted read per strip. */
+#define ILI9341_READ_STRIP_ROWS 8u
+#define ILI9341_READ_MAX_PIXELS ((size_t)ILI9341_WIDTH * (size_t)ILI9341_READ_STRIP_ROWS)
+static uint8_t s_read_buf[1u + 3u * ILI9341_READ_MAX_PIXELS + 1u];
 
 typedef struct {
     uint8_t cmd;
@@ -194,6 +242,108 @@ static void begin_pixel_write(void) {
     set_data_bits(16);
 }
 
+/* ------------------------------------------------------------------------- */
+/* XIP stream path (flash -> RAM ring -> SPI)                                */
+/* ------------------------------------------------------------------------- */
+
+/* Halt any stream, discard the in-flight read and drain the 2-entry FIFO so a
+ * new STREAM_ADDR/STREAM_CTR pair can be programmed safely. */
+static void xip_stream_reset(void) {
+    xip_ctrl_hw->stream_ctr = 0;
+    while ((xip_ctrl_hw->stat & XIP_STAT_FIFO_EMPTY_BITS) == 0u) {
+        (void)xip_ctrl_hw->stream_fifo;
+    }
+}
+
+/* Start streaming \p words 32-bit flash words from \p addr (4-byte aligned). */
+static void xip_stream_start(const void *addr, uint32_t words) {
+    xip_ctrl_hw->stream_addr = (uint32_t)(uintptr_t)addr;
+    xip_ctrl_hw->stream_ctr = words;
+}
+
+/* Fill one ring half from flash: program the stream unit and let the stream
+ * DMA drain the XIP_AUX FIFO. Blocks until the half is complete. */
+static void flash_ring_fill(uint32_t half, const uint16_t *src, uint32_t pixels) {
+    const uint32_t words = (pixels + 1u) >> 1u; /* odd pixel counts round up */
+    if (words > ILI9341_FLASH_HALF_WORDS) {
+        return; /* callers never exceed the half size */
+    }
+
+    xip_stream_reset();
+    xip_stream_start(src, words);
+
+    dma_channel_config cfg = dma_channel_get_default_config(s.dma_stream);
+    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_32);
+    channel_config_set_dreq(&cfg, DREQ_XIP_STREAM);
+    channel_config_set_read_increment(&cfg, false);
+    channel_config_set_write_increment(&cfg, true);
+    dma_channel_configure(s.dma_stream, &cfg, s_flash_ring[half], &xip_aux_hw->stream, words,
+                          true);
+
+    while (dma_channel_is_busy(s.dma_stream)) {
+        tight_loop_contents();
+    }
+}
+
+/* Clock one ring half out through the SPI TX DREQ (16-bit frames). */
+static void flash_ring_send(uint32_t half, uint32_t pixels) {
+    dma_channel_config cfg = dma_channel_get_default_config(s.dma_spi_flash);
+    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
+    channel_config_set_dreq(&cfg, spi_get_dreq(s.cfg.spi, true));
+    channel_config_set_read_increment(&cfg, true);
+    channel_config_set_write_increment(&cfg, false);
+    dma_channel_configure(s.dma_spi_flash, &cfg, &spi_get_hw(s.cfg.spi)->dr, s_flash_ring[half],
+                          dma_encode_transfer_count(pixels), true);
+}
+
+/* Send \p pixels contiguous pixels from flash through the ping-pong ring.
+ * Half k is filled, then sent while half k+1 is being filled, so the SPI
+ * channel never reads a half that has not been completed. */
+static void flash_send_pixels(const uint16_t *src, uint32_t pixels) {
+    uint32_t done = 0;
+    uint32_t len = (pixels > ILI9341_FLASH_HALF_PIXELS) ? ILI9341_FLASH_HALF_PIXELS : pixels;
+    uint32_t half = 0;
+
+    flash_ring_fill(half, src, len);
+
+    for (;;) {
+        flash_ring_send(half, len);
+
+        const uint32_t next_done = done + len;
+        uint32_t next_len = 0;
+        if (next_done < pixels) {
+            const uint32_t left = pixels - next_done;
+            next_len = (left > ILI9341_FLASH_HALF_PIXELS) ? ILI9341_FLASH_HALF_PIXELS : left;
+            flash_ring_fill(half ^ 1u, src + next_done, next_len);
+        }
+
+        while (dma_channel_is_busy(s.dma_spi_flash)) {
+            tight_loop_contents();
+        }
+
+        done = next_done;
+        if (done >= pixels) {
+            break;
+        }
+        len = next_len;
+        half ^= 1u;
+    }
+}
+
+/* Pad drive for the display control lines. MISO keeps the default settings
+ * because the panel drives it. */
+static void apply_pin_drive(bool fast) {
+    const enum gpio_slew_rate slew = fast ? GPIO_SLEW_RATE_FAST : GPIO_SLEW_RATE_SLOW;
+    const enum gpio_drive_strength drive =
+        fast ? GPIO_DRIVE_STRENGTH_12MA : GPIO_DRIVE_STRENGTH_4MA;
+    const uint pins[] = {s.cfg.pin_sck, s.cfg.pin_mosi, s.cfg.pin_cs, s.cfg.pin_dc};
+
+    for (size_t i = 0; i < count_of(pins); i++) {
+        gpio_set_slew_rate(pins[i], slew);
+        gpio_set_drive_strength(pins[i], drive);
+    }
+}
+
 static void backlight_init(void) {
     gpio_set_function(s.cfg.pin_bl, GPIO_FUNC_PWM);
     uint slice = pwm_gpio_to_slice_num(s.cfg.pin_bl);
@@ -231,6 +381,7 @@ void ili9341_default_config(ili9341_config_t *cfg) {
     cfg->pin_rst = ILI9341_PIN_RST;
     cfg->pin_bl = ILI9341_PIN_BL;
     cfg->spi_hz = ILI9341_SPI_HZ;
+    cfg->fast_pins = (ILI9341_FAST_PINS != 0);
 }
 
 bool ili9341_init(const ili9341_config_t *cfg) {
@@ -253,6 +404,8 @@ bool ili9341_init(const ili9341_config_t *cfg) {
     s.dma_pending = false;
     s.asleep = false;
     s.read_dummy_bit = false;
+    s.selftest_done = false;
+    s.miso_alive = false;
     s.madctl = 0;
     ili9341_reset_stats();
 
@@ -262,6 +415,27 @@ bool ili9341_init(const ili9341_config_t *cfg) {
         s.dma_chan = (uint)dma_claim_unused_channel(true);
         s.dma_claimed = true;
     }
+
+    /* Two more channels for the flash path. If the pool is exhausted the
+     * driver still works: ili9341_blit_flash_async() falls back to the plain
+     * DMA path. */
+    if (!s.flash_claimed) {
+        const int stream = dma_claim_unused_channel(false);
+        const int spi = dma_claim_unused_channel(false);
+        if (stream >= 0 && spi >= 0) {
+            s.dma_stream = (uint)stream;
+            s.dma_spi_flash = (uint)spi;
+            s.flash_claimed = true;
+        } else {
+            if (stream >= 0) {
+                dma_channel_unclaim((uint)stream);
+            }
+            if (spi >= 0) {
+                dma_channel_unclaim((uint)spi);
+            }
+        }
+    }
+    flashstream_init();
 
     /* Control pins first: CS high, DC high, reset released. Latch the output
      * value before enabling the driver so CS cannot glitch low. */
@@ -280,6 +454,9 @@ bool ili9341_init(const ili9341_config_t *cfg) {
     gpio_set_function(s.cfg.pin_sck, GPIO_FUNC_SPI);
     gpio_set_function(s.cfg.pin_mosi, GPIO_FUNC_SPI);
     gpio_set_function(s.cfg.pin_miso, GPIO_FUNC_SPI);
+
+    /* Configure the pads before the first high-speed clock edge. */
+    apply_pin_drive(s.cfg.fast_pins);
 
     backlight_init();
 
@@ -323,6 +500,13 @@ uint32_t ili9341_set_spi_clock(uint32_t hz) {
     ili9341_wait_idle();
     s.spi_hz = (uint32_t)spi_set_baudrate(s.cfg.spi, hz);
     return s.spi_hz;
+}
+
+void ili9341_set_pin_drive(bool fast) {
+    if (!s.initialised) {
+        return;
+    }
+    apply_pin_drive(fast);
 }
 
 uint32_t ili9341_get_spi_clock(void) {
@@ -416,8 +600,71 @@ void ili9341_blit_async(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const ui
     dma_start(px, count, true);
 }
 
-void ili9341_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color) {
-    if (!s.initialised || w == 0u || h == 0u) {
+bool ili9341_blit_flash_async(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
+                              const uint16_t *px) {
+    if (!s.initialised || px == NULL || w == 0u || h == 0u) {
+        return false;
+    }
+
+    const uint32_t count = (uint32_t)w * (uint32_t)h;
+    if (count > ILI9341_DMA_MAX_TRANSFER) {
+        return false;
+    }
+
+    const uintptr_t addr = (uintptr_t)px;
+    const bool in_flash = addr >= ILI9341_XIP_BASE && addr < ILI9341_XIP_END;
+
+    /* RAM, or an unaligned flash pointer the stream unit cannot address:
+     * plain 16-bit DMA either way (correct, just not cache-friendly). */
+    if (!in_flash || (addr & 3u) != 0u || !s.flash_claimed) {
+        ili9341_blit_async(x, y, w, h, px);
+        return true;
+    }
+
+    if (!flashstream_try_claim(FLASHSTREAM_OWNER_DISPLAY)) {
+        return false;
+    }
+
+    ili9341_set_window(x, y, w, h); /* waits for the previous transfer */
+    begin_pixel_write();
+
+    const uint16_t *src = px;
+    uint32_t remaining = count;
+    while (remaining > 0u) {
+        const uint32_t chunk =
+            (remaining > ILI9341_FLASH_CHUNK_PIXELS) ? ILI9341_FLASH_CHUNK_PIXELS : remaining;
+
+        flash_send_pixels(src, chunk);
+        s.stats.flash_bytes += (uint64_t)chunk * 2u;
+        s.stats.flash_blits++;
+        s.stats.bytes_sent += (uint64_t)chunk * 2u;
+        s.stats.transfers++;
+
+        src += chunk;
+        remaining -= chunk;
+
+        /* Audio priority: let a waiting audio user take the unit between
+         * chunks, then re-claim. Give up after a bounded wait so the caller
+         * can repaint with the strip path instead of blocking the panel. */
+        if (remaining > 0u && flashstream_audio_pending()) {
+            flashstream_release(FLASHSTREAM_OWNER_DISPLAY);
+            const uint32_t t0 = time_us_32();
+            while (!flashstream_try_claim(FLASHSTREAM_OWNER_DISPLAY)) {
+                if ((uint32_t)(time_us_32() - t0) > ILI9341_FLASH_YIELD_US) {
+                    ili9341_wait_idle();
+                    return false;
+                }
+                tight_loop_contents();
+            }
+        }
+    }
+
+    ili9341_wait_idle();
+    flashstream_release(FLASHSTREAM_OWNER_DISPLAY);
+    return true;
+}
+
+void ili9341_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color) {    if (!s.initialised || w == 0u || h == 0u) {
         return;
     }
 
@@ -504,6 +751,33 @@ static uint16_t read_reg_raw16(uint8_t cmd) {
     return ((uint16_t)rx[0] << 8) | (uint16_t)rx[1];
 }
 
+/* Start a RAMRD transaction for a window: CS low, CASET, PASET, RAMRD. Unlike
+ * ili9341_set_window() this does not issue RAMWR, because the panel would then
+ * be in write mode and RAMRD would read from an undefined position. */
+static void read_window_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    uint16_t x1 = (uint16_t)(x + w - 1u);
+    uint16_t y1 = (uint16_t)(y + h - 1u);
+    uint8_t col[4] = {high_byte(x), low_byte(x), high_byte(x1), low_byte(x1)};
+    uint8_t row[4] = {high_byte(y), low_byte(y), high_byte(y1), low_byte(y1)};
+
+    write_cmd_byte(ILI9341_CMD_CASET);
+    spi_write_blocking(s.cfg.spi, col, sizeof col);
+
+    write_cmd_byte(ILI9341_CMD_PASET);
+    spi_write_blocking(s.cfg.spi, row, sizeof row);
+
+    write_cmd_byte(ILI9341_CMD_RAMRD);
+}
+
+/* Extract one data byte from a received stream that may be delayed by the one
+ * dummy bit this module inserts (see s.read_dummy_bit). */
+static uint8_t pixel_byte(const uint8_t *src, size_t idx) {
+    if (!s.read_dummy_bit) {
+        return src[idx];
+    }
+    return (uint8_t)(((uint16_t)src[idx] << 1) | (uint16_t)(src[idx + 1] >> 7));
+}
+
 /* Decode a raw 16-bit register read with the detected dummy-bit alignment:
  * no dummy -> rx[0] = D7..D0; one dummy -> rx[0] = [dummy, D7..D1] and
  * rx[1] bit 7 = D0. */
@@ -538,6 +812,75 @@ uint8_t ili9341_read_reg8(uint8_t cmd) {
         return 0;
     }
     return decode_reg8(read_reg_raw16(cmd));
+}
+
+bool ili9341_read_pixels(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t *out) {
+    /* The scratch buffer holds ILI9341_READ_STRIP_ROWS rows of the panel width;
+     * wider windows would overflow it and cannot be valid on this panel. */
+    if (!s.initialised || out == NULL || w == 0u || h == 0u || w > (uint16_t)ILI9341_WIDTH) {
+        return false;
+    }
+
+    /* The dummy-bit alignment is shared with the register reads; probe once if
+     * the caller has not done so already. */
+    if (!s.selftest_done) {
+        ili9341_selftest_t st;
+        (void)ili9341_self_test(&st);
+    }
+    if (!s.miso_alive) {
+        return false;
+    }
+
+    uint32_t restore_hz = s.spi_hz;
+    uint32_t read_hz = restore_hz < ILI9341_READ_HZ ? restore_hz : ILI9341_READ_HZ;
+
+    ili9341_wait_idle();
+    drain_rx_fifo();
+    (void)spi_set_baudrate(s.cfg.spi, read_hz);
+
+    bool live = false;
+    uint16_t row = 0;
+
+    while (row < h) {
+        uint16_t rows = (uint16_t)(((uint32_t)h - row) > ILI9341_READ_STRIP_ROWS
+                                       ? ILI9341_READ_STRIP_ROWS
+                                       : (uint32_t)h - row);
+        uint32_t npx = (uint32_t)w * (uint32_t)rows;
+        size_t bytes = 1u + (size_t)npx * 3u + (s.read_dummy_bit ? 1u : 0u);
+
+        read_window_begin(x, (uint16_t)(y + row), w, rows);
+
+        memset(s_read_buf, 0, bytes);
+        (void)spi_read_blocking(s.cfg.spi, 0xFF, s_read_buf, bytes);
+        hw_wait_spi_idle();
+        gpio_put(s.cfg.pin_cs, 1);
+        drain_rx_fifo();
+
+        /* s_read_buf[0] is the RAMRD dummy byte. */
+        const uint8_t *src = &s_read_buf[1];
+        for (uint32_t i = 0; i < npx; i++) {
+            uint8_t r = pixel_byte(src, (size_t)i * 3u + 0u);
+            uint8_t g = pixel_byte(src, (size_t)i * 3u + 1u);
+            uint8_t b = pixel_byte(src, (size_t)i * 3u + 2u);
+            out[(size_t)row * (size_t)w + (size_t)i] =
+                (uint16_t)(((uint16_t)(r >> 3) << 11) | ((uint16_t)(g >> 2) << 5) |
+                           (uint16_t)(b >> 3));
+        }
+
+        if (!live) {
+            for (size_t i = 0; i < bytes; i++) {
+                if (s_read_buf[i] != 0x00u && s_read_buf[i] != 0xFFu) {
+                    live = true;
+                    break;
+                }
+            }
+        }
+
+        row = (uint16_t)(row + rows);
+    }
+
+    (void)spi_set_baudrate(s.cfg.spi, restore_hz);
+    return live;
 }
 
 bool ili9341_self_test(ili9341_selftest_t *out) {
@@ -577,6 +920,9 @@ bool ili9341_self_test(ili9341_selftest_t *out) {
     out->miso_alive = (out->rddid != 0x000000u && out->rddid != 0xFFFFFFu) ||
                       raw16_alive(raw_madctl) || raw16_alive(raw_pixfmt) ||
                       raw16_alive(raw_power);
+
+    s.selftest_done = true;
+    s.miso_alive = out->miso_alive;
 
     return out->madctl_ok && out->pixfmt_ok && out->display_on;
 }

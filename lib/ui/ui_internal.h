@@ -155,6 +155,39 @@ uint16_t ui_long_press_ms(void);
 /** @brief Invalidate a rectangle on the panel (thin wrapper over gfx_invalidate). */
 void ui_invalidate(gfx_rect_t r);
 
+/** @brief Invalidate a rectangle without merging it (direct-layer hint). */
+void ui_invalidate_exact(gfx_rect_t r);
+
+/** @brief Invalidate the whole status bar as three side-by-side pieces. */
+void ui_invalidate_status(void);
+
+/**
+ * @brief Invalidate every visible part of the current screen.
+ *
+ * The status bar is split into its three pieces and the content is asked for
+ * its own invalidation (static menu rows and album art are invalidated exactly,
+ * so the direct flash path can pick them up). Valid only when the navigation
+ * stack is settled, i.e. the top screen is drawn at x offset 0.
+ */
+void ui_invalidate_view_all(void);
+
+/**
+ * @brief Register the direct layers for the current screen state.
+ *
+ * Called by ui_task() right before gfx_render(). Only steady-state screens
+ * (no slide transition, highlight settled) declare layers; anything that moves
+ * keeps the strip path.
+ */
+void ui_build_direct_layers(void);
+
+/**
+ * @brief Render the pending dirty rects right now, without advancing time.
+ *
+ * Registers the direct layers, runs gfx_render() and waits for the panel. Used
+ * by the host simulator to compare the direct path with a strip-only render.
+ */
+void ui_render_now(void);
+
 /** @brief Push a prepared screen, returning its level or NULL when the stack is full. */
 ui_screen_t *ui_nav_push(ui_screen_kind_t kind);
 
@@ -230,6 +263,23 @@ void ui_menu_invalidate_row(const ui_screen_t *s, uint32_t index);
 /** @brief Prefetch the visible window (also called by ui_menu_step). */
 void ui_menu_prefetch(const ui_np_t *np, ui_screen_t *s);
 
+/**
+ * @brief Declare direct (flash DMA) layers for the static rows of a menu.
+ *
+ * Only Main/Music/Settings rows with a precomputed asset qualify, and only
+ * while the screen is settled (no scroll, highlight exactly on a row).
+ */
+void ui_menu_direct_layers(const ui_np_t *np, const ui_screen_t *s);
+
+/**
+ * @brief Invalidate a settled menu view row by row.
+ *
+ * Static rows are invalidated exactly (so their assets match), the remaining
+ * content area normally. Falls back to the whole content rect while the list
+ * scrolls or the highlight animates.
+ */
+void ui_menu_invalidate_view(const ui_np_t *np, const ui_screen_t *s);
+
 /** @brief Status bar title for a screen. */
 const char *ui_screen_title(const ui_np_t *np, const ui_screen_t *s);
 
@@ -273,6 +323,12 @@ void ui_nowplaying_step(const ui_np_t *np, ui_screen_t *s, float dt_s, uint32_t 
 
 /** @brief Draw the Now Playing screen translated by x_off. */
 void ui_nowplaying_draw(gfx_canvas_t *c, const ui_np_t *np, const ui_screen_t *s, int x_off);
+
+/** @brief Declare the album art direct layer (120x120 flash image). */
+void ui_nowplaying_direct_layers(const ui_np_t *np, const ui_screen_t *s);
+
+/** @brief Invalidate the Now Playing content (art exactly, the rest normally). */
+void ui_nowplaying_invalidate_view(const ui_np_t *np, const ui_screen_t *s);
 
 /** @brief Handle wheel ticks on Now Playing (volume or scrub seek). */
 void ui_nowplaying_wheel(const ui_np_t *np, int ticks, uint32_t now_us);

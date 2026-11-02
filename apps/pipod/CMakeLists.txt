@@ -1,9 +1,11 @@
-# apps/pipod — the PiPod UI with a simulated music library and fake audio.
+# apps/pipod — the PiPod UI with the real media-pack library (demo tables as
+# the fallback) and a fake audio engine.
 #
-# Needs lib/ui (target `ui`). Skip configure errors while that workstream is
-# still landing: re-run cmake once ui/CMakeLists.txt exists.
+# Needs lib/ui (target `ui`) and lib/media (target `media`); skip configure
+# errors while those workstreams are still landing.
 
-if(NOT TARGET ui OR NOT TARGET gfx OR NOT TARGET ili9341 OR NOT TARGET input)
+if(NOT TARGET ui OR NOT TARGET gfx OR NOT TARGET ili9341 OR NOT TARGET input OR
+   NOT TARGET media OR NOT TARGET flashstream)
     message(STATUS "pipod: required libraries not configured yet -- skipping pipod")
     return()
 endif()
@@ -20,6 +22,8 @@ target_link_libraries(pipod
     gfx
     ili9341
     input
+    media
+    flashstream
     ui_demo_assets
     pico_stdlib
     pico_multicore
@@ -31,3 +35,7 @@ pico_enable_stdio_uart(pipod 1)
 pico_enable_stdio_usb(pipod 0)
 
 pico_add_extra_outputs(pipod)
+
+# Fail the build when the image would overlap the media pack (1 MB region).
+include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/check_firmware_size.cmake)
+media_check_firmware_size(pipod)

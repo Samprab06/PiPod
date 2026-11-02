@@ -13,6 +13,15 @@
  * completed by the blit of N + 1. The parity is kept across gfx_render() calls
  * so that the first band of a new frame never lands in the buffer that the
  * previous frame left in flight.
+ *
+ * Direct layers: a scene can declare opaque images at fixed screen rectangles
+ * (gfx_direct_add()). A dirty rect that is exactly covered by one of them (same
+ * x and width, inside its rows) is sent by ili9341_blit_flash_async() straight
+ * from flash: the XIP stream unit feeds a RAM ring that the SPI DMA drains, so
+ * the CPU never touches those pixels. Everything else is drawn into strips.
+ * The two paths share the SPI and are sequenced by the driver (direct blits
+ * complete before the next window command, strip blits are awaited by the next
+ * transfer).
  */
 
 #include "gfx_render.h"
@@ -32,10 +41,19 @@
 
 #define GFX_STRIP_PIXELS ((size_t)GFX_STRIP_MAX_W * (size_t)GFX_STRIP_H)
 
+typedef struct {
+    gfx_rect_t rect;       /**< Screen rectangle the pixels occupy. */
+    const uint16_t *pixels;/**< Row-major RGB565 at rect.x/rect.y. */
+    uint16_t stride;       /**< Row stride in pixels (>= rect.w). */
+} gfx_direct_t;
+
 static uint16_t s_buf[2][GFX_STRIP_PIXELS];
 static uint8_t s_buf_index;
 static gfx_rect_t s_dirty[GFX_MAX_DIRTY];
 static uint8_t s_dirty_count;
+static gfx_direct_t s_direct[GFX_MAX_DIRECT];
+static uint8_t s_direct_count;
+static bool s_direct_enabled = true;
 static gfx_render_stats_t s_stats;
 
 /* ------------------------------------------------------------------------- */
@@ -82,8 +100,59 @@ static uint32_t rect_area(gfx_rect_t r) {
 void gfx_render_init(void) {
     s_buf_index = 0;
     s_dirty_count = 0;
+    s_direct_count = 0;
+    s_direct_enabled = true;
     memset(s_dirty, 0, sizeof(s_dirty));
+    memset(s_direct, 0, sizeof(s_direct));
     memset(&s_stats, 0, sizeof(s_stats));
+}
+
+void gfx_direct_begin_frame(void) {
+    s_direct_count = 0;
+}
+
+bool gfx_direct_add(gfx_rect_t r, const uint16_t *pixels, uint16_t stride_px) {
+    if (pixels == NULL || r.w <= 0 || r.h <= 0) {
+        return false;
+    }
+    if (stride_px < (uint16_t)r.w) {
+        return false;
+    }
+    if (s_direct_count >= GFX_MAX_DIRECT) {
+        return false;
+    }
+    gfx_direct_t *d = &s_direct[s_direct_count++];
+    d->rect = r;
+    d->pixels = pixels;
+    d->stride = stride_px;
+    return true;
+}
+
+void gfx_direct_set_enabled(bool on) {
+    s_direct_enabled = on;
+}
+
+bool gfx_direct_enabled(void) {
+    return s_direct_enabled;
+}
+
+/* Find a layer that covers the whole dirty rect: same x and width, inside the
+ * layer's rows. Vertical offsetting is what makes partial rows work. */
+static const gfx_direct_t *direct_for_rect(gfx_rect_t r) {
+    if (!s_direct_enabled) {
+        return NULL;
+    }
+    for (uint8_t i = 0; i < s_direct_count; i++) {
+        const gfx_direct_t *d = &s_direct[i];
+        if (d->rect.x != r.x || d->rect.w != r.w) {
+            continue;
+        }
+        if (r.y < d->rect.y || (int)r.y + (int)r.h > (int)d->rect.y + (int)d->rect.h) {
+            continue;
+        }
+        return d;
+    }
+    return NULL;
 }
 
 void gfx_invalidate(gfx_rect_t r) {
@@ -158,6 +227,22 @@ void gfx_invalidate_all(void) {
     s_dirty_count = 1;
 }
 
+void gfx_invalidate_exact(gfx_rect_t r) {
+    r = gfx_rect_intersect(r, screen_rect());
+    if (gfx_rect_empty(r)) {
+        return;
+    }
+
+    /* Keep a rect that a direct layer can cover exactly as its own entry: the
+     * normal merge would grow it into the neighbours and lose the DMA path.
+     * When the list is full, fall back to the merging behaviour. */
+    if (s_dirty_count >= GFX_MAX_DIRTY) {
+        gfx_invalidate(r);
+        return;
+    }
+    s_dirty[s_dirty_count++] = r;
+}
+
 bool gfx_has_dirty(void) {
     return s_dirty_count > 0;
 }
@@ -175,12 +260,34 @@ void gfx_render(gfx_draw_fn draw, void *user) {
     const uint32_t rect_count = s_dirty_count;
     uint32_t bands = 0;
     uint32_t pixels = 0;
+    uint32_t direct_pixels = 0;
 
     for (uint32_t i = 0; i < rect_count; i++) {
         gfx_rect_t r = s_dirty[i];
         if (r.w > GFX_STRIP_MAX_W) {
             continue;
         }
+
+        /* A dirty rect entirely inside one direct layer goes straight from
+         * flash to the panel; the scene callback is not called for it because
+         * the layer is opaque and nothing may be drawn on top. */
+        const gfx_direct_t *layer = direct_for_rect(r);
+        if (layer != NULL) {
+            const uint16_t *src =
+                layer->pixels + (size_t)(r.y - layer->rect.y) * (size_t)layer->stride;
+            if (ili9341_blit_flash_async((uint16_t)r.x, (uint16_t)r.y, (uint16_t)r.w,
+                                         (uint16_t)r.h, src)) {
+                const uint32_t area = rect_area(r);
+                direct_pixels += area;
+                pixels += area;
+                s_stats.direct_blits++;
+                continue;
+            }
+            /* The driver could not take the XIP stream unit (audio has it) or
+             * gave up mid-blit: repaint the whole rect with strips. */
+            s_stats.direct_fallbacks++;
+        }
+
         const int y_end = (int)r.y + (int)r.h;
         for (int band_y = r.y; band_y < y_end; band_y += GFX_STRIP_H) {
             int band_h = y_end - band_y;
@@ -216,6 +323,8 @@ void gfx_render(gfx_draw_fn draw, void *user) {
     s_stats.rects += rect_count;
     s_stats.bands += bands;
     s_stats.pixels += pixels;
+    s_stats.direct_pixels += direct_pixels;
+    s_stats.strip_pixels += pixels - direct_pixels;
     s_stats.last_render_us = dt;
     if (dt > s_stats.max_render_us) {
         s_stats.max_render_us = dt;
@@ -231,4 +340,11 @@ void gfx_render_get_stats(gfx_render_stats_t *s) {
 
 void gfx_render_reset_stats(void) {
     memset(&s_stats, 0, sizeof(s_stats));
+}
+
+void gfx_render_set_stats(const gfx_render_stats_t *s) {
+    if (s == NULL) {
+        return;
+    }
+    s_stats = *s;
 }

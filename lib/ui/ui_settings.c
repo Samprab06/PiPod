@@ -31,8 +31,10 @@ static struct {
     bool perf;
 } s_set;
 
-/* Only rates that clk_peri (150 MHz) can actually produce: 150 / (2 * n). */
+/* Only rates that clk_peri (150 MHz) can actually produce: 150 / (2 * n).
+ * 75 MHz is the driver default (ili9341_config.h) and the initial selection. */
 static const uint32_t s_clock_hz[] = {18750000u, 25000000u, 37500000u, 75000000u};
+#define UI_CLOCK_DEFAULT_IDX 3u
 
 /** Per-row subtitle buffers (rows are drawn one at a time, but keep them apart). */
 static char s_sub[UI_SETTING_ROWS][32];
@@ -52,15 +54,14 @@ static void format_mhz(char *buf, size_t cap) {
     }
     /* Hundredths of a MHz so 18.75 MHz is not rounded to 18.8 MHz. */
     const uint32_t hundredths = (hz + 5000u) / 10000u;
-    const char *exp = (hz >= 70000000u) ? " (exp)" : "";
     if ((hundredths % 100u) == 0u) {
-        (void)snprintf(buf, cap, "%lu MHz%s", (unsigned long)(hundredths / 100u), exp);
+        (void)snprintf(buf, cap, "%lu MHz", (unsigned long)(hundredths / 100u));
     } else if ((hundredths % 10u) == 0u) {
-        (void)snprintf(buf, cap, "%lu.%lu MHz%s", (unsigned long)(hundredths / 100u),
-                       (unsigned long)((hundredths / 10u) % 10u), exp);
+        (void)snprintf(buf, cap, "%lu.%lu MHz", (unsigned long)(hundredths / 100u),
+                       (unsigned long)((hundredths / 10u) % 10u));
     } else {
-        (void)snprintf(buf, cap, "%lu.%02lu MHz%s", (unsigned long)(hundredths / 100u),
-                       (unsigned long)(hundredths % 100u), exp);
+        (void)snprintf(buf, cap, "%lu.%02lu MHz", (unsigned long)(hundredths / 100u),
+                       (unsigned long)(hundredths % 100u));
     }
 }
 
@@ -82,7 +83,7 @@ static uint32_t free_ram_kb(void) {
 
 void ui_settings_init(void) {
     s_set.backlight = 100u;
-    s_set.clock_idx = 2u;
+    s_set.clock_idx = (uint8_t)UI_CLOCK_DEFAULT_IDX; /* 75 MHz, the driver default */
     s_set.shuffle = false;
     s_set.repeat = false;
     s_set.perf = false;

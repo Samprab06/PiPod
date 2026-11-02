@@ -337,7 +337,7 @@ PiPod (root)
     ├── Backlight          (wheel adjusts 10..100 % in place)
     ├── Shuffle            (posts UI_CMD_SET_SHUFFLE)
     ├── Repeat             (posts UI_CMD_SET_REPEAT)
-    ├── Display Clock      (cycles 18.75 / 25 / 37.5 / 75 MHz; 75 MHz experimental)
+    ├── Display Clock      (cycles 18.75 / 25 / 37.5 / 75 MHz; 75 MHz is the default)
     ├── Performance overlay(On/Off FPS/CPU readout in the status bar)
     └── About              (static screen)
 ```
@@ -525,32 +525,130 @@ allocation.
 
 ---
 
+## 7.1 Media-pack library (`lib/media/media_library.h`)
+
+`media_library_scan()` builds the index once and caches it in flash; after that
+the UI and the player read a small RAM index and copy strings straight from the
+cache region (XIP). It runs on core 0 **before core 1 starts**, because the
+scan erases/programs flash and that stalls XIP (see "Flash writes" in
+[media_design.md](media_design.md)).
+
+```c
+static media_library_t lib;
+
+bool ok = media_library_scan(&lib, report_cb);   /* report_cb may be NULL */
+const media_scan_stats_t *st = media_library_stats(&lib);
+if (ok && st->valid && media_library_ready(&lib)) {
+    ui_init(&(ui_config_t){ .library = media_library_ui(&lib) });
+}
+
+media_track_info_t ti;
+if (media_library_track(&lib, track_id, &ti)) {
+    ui_track_info_t t = {0};
+    t.track_id = ti.id;  t.album_id = ti.album_id;
+    snprintf(t.title, sizeof t.title, "%s", ti.title);   /* artist/album alike */
+    t.duration_ms = ti.duration_ms;
+    ui_set_now_playing(&t);
+}
+```
+
+- **Ids**: artists `0x00010000 + index`, albums `0x00020000 + index`, tracks
+  `0x00030000 + index`, and the one built-in playlist "All Songs" is
+  `MEDIA_LIB_PLAYLIST_ALL_ID` (`0x00040000`). Artist/album/track lists also
+  use `UI_ID_ALL` as the "everything" parent.
+- **Lists** (`ui_library_t`): `UI_LIST_ARTISTS`, `UI_LIST_ALBUMS` (parent =
+  artist or `UI_ID_ALL`), `UI_LIST_SONGS` (parent = album or `UI_ID_ALL`),
+  `UI_LIST_PLAYLISTS` (one row, "All Songs") and `UI_LIST_PLAYLIST_SONGS`
+  (parent = the playlist id). Subtitles: artist for songs, artist for albums,
+  "N albums" for artists, "N songs" for the playlist.
+- **Art**: `get_album_art()` returns a 120x120 `gfx_image_t` whose `pixels`
+  point into the XIP cache region, so the display direct layer can DMA it.
+  Albums that had no cover (or a PNG/progressive JPEG) get a seeded
+  placeholder; when the 1 MB cache is full the remaining albums return `NULL`
+  and the UI draws its own placeholder.
+- **`media_library_track()`** fills tags, stream info, `audio_offset`/
+  `audio_size` and a `media_source_t` over the audio bytes (`source.xip_base`
+  points at the first audio byte in flash, `source.size == audio_size`). The
+  source is valid until the next `media_library_track()` on that library
+  (one shared audio view), so copy base/size into the decoder.
+- **Caps**: 512 tracks, 128 albums, 128 artists; extra entries are skipped and
+  counted in `stats.skipped`.
+
+## 7.2 Audio integration
+
+Audio decoding/I2S is a different workstream; this section is the contract it
+needs (the header form is `lib/media/media_stream.h`, with constants).
+
+**Input.** The decoder reads compressed bytes from `media_track_info_t.source`
+(the audio payload only: tags/headers are already skipped). Use
+`source.xip_base + offset` and DMA for bulk reads; `source.read()` is a small
+memcpy helper for headers or for a backend without a contiguous mapping (SD).
+Never read past `source.size` and never assume the payload starts at file
+offset 0.
+
+**XIP stream unit.** Bulk flash -> RAM transfers share the single RP2350 XIP
+stream unit through `lib/flashstream`:
+
+```c
+flashstream_audio_request(true);
+while (!flashstream_try_claim(FLASHSTREAM_OWNER_AUDIO)) sleep_us(50);
+/* program DREQ_XIP_STREAM against source.xip_base + off */
+flashstream_release(FLASHSTREAM_OWNER_AUDIO);
+flashstream_audio_request(false);
+```
+
+Audio has priority; the display yields between 8 KB chunks (about 0.9 ms at
+75 MHz), so the wait is bounded. Never program `xip_ctrl_hw` directly.
+
+**Buffering / DMA.** Keep at least two decoder input buffers of >= 4.6 KB each
+per MP3 frame (one MPEG-1 Layer III frame is at most 1441 bytes; the pair
+lets the next frame/header arrive while the current one decodes). PCM output
+is ping-pong DMA into the PIO I2S TX FIFO, one channel per half buffer, with
+the refill IRQ on core 0. Never write flash during playback: an erase stalls
+all XIP, including the decoder input and UI code.
+
+**Clocks / WM8960.** 44.1 kHz needs MCLK = 11.2896 MHz (256 fs); 48 kHz needs
+12.288 MHz. The RP2350 PLLs are integer-N from the 12 MHz crystal, so these
+rates are not exact from the RP2350 alone. Prefer the WM8960 as I2S **master**
+from its own crystal/PLL (RP2350 as I2S slave, no fractional-divider jitter).
+If the RP2350 must supply MCLK, use GP13 or GP15 (clock GPOUT) — **not**
+GP21/GP26 (on-board SELECT/MENU buttons) and **not** GP22..GP25 (on-board
+LEDs); the codec PLL then derives the exact audio rate. Proposed I2S data pins
+are GP10..GP12.
+
+**Playback.** pipod does not play audio yet; `sim_player.c` still simulates
+the position and publishes `ui_set_now_playing()`/`ui_set_position()`. The
+command side (`ui_poll_command()`, `UI_CMD_*`) is unchanged; see sections 3-4.
+
 ## 8. Display driver (`lib/display/ili9341.h`)
 
 The driver is single-owner and unsynchronised. It uses SPI0 with 8-bit frames
 for commands/parameters and 16-bit frames for pixels (native RGB565, MSB
-first), one dynamically claimed DMA channel, and polls DMA completion (no DMA
-IRQ).
+first), three dynamically claimed DMA channels (strip blits plus the two XIP
+stream channels), and polls DMA completion (no DMA IRQ). The board defaults are
+**75 MHz** and fast (12 mA, fast-slew) pad drive.
 
 | Function | Purpose |
 |---|---|
-| `ili9341_default_config(&cfg)` | Fill a config with `ili9341_config.h` defaults (SPI0, GP32..38, 37.5 MHz). |
-| `ili9341_init(&cfg)` | Reset, full panel init, COLMOD 16-bit, landscape MADCTL, sleep-out, DISPON, backlight 100 %, claim one DMA channel. Returns the self-test verdict; `false` still leaves the panel initialised and usable write-only. |
-| `ili9341_set_spi_clock(hz)` / `ili9341_get_spi_clock()` | Runtime clock change (waits for idle first). Returns the **actual** clock the SPI hardware achieved, which may be lower than requested. At clk_peri = 150 MHz the achievable rates are `150 / (even prescale * (1 + SCR))`, i.e. 15 / 18.75 / 25 / 37.5 / 75 MHz near the useful range (75 is experimental). |
+| `ili9341_default_config(&cfg)` | Fill a config with `ili9341_config.h` defaults (SPI0, GP32..38, 75 MHz, `fast_pins = true`). |
+| `ili9341_init(&cfg)` | Reset, full panel init, COLMOD 16-bit, landscape MADCTL, sleep-out, DISPON, pad drive from `cfg->fast_pins`, backlight 100 %, claim three DMA channels. Returns the self-test verdict; `false` still leaves the panel initialised and usable write-only. |
+| `ili9341_set_spi_clock(hz)` / `ili9341_get_spi_clock()` | Runtime clock change (waits for idle first). Returns the **actual** clock the SPI hardware achieved, which may be lower than requested. At clk_peri = 150 MHz the achievable rates are `150 / (even prescale * (1 + SCR))`, i.e. 15 / 18.75 / 25 / 37.5 / 75 MHz near the useful range. |
 | `ili9341_set_rotation(r)` | Landscape / landscape-flipped / portrait / portrait-flipped; updates `width()`/`height()`. |
 | `ili9341_width()` / `ili9341_height()` | 320x240 in landscape, 240x320 in portrait. |
 | `ili9341_set_window(x,y,w,h)` | CASET/PASET/RAMWR. Leaves CS low and the panel in pixel-write mode; the next blit/fill continues the transaction. |
 | `ili9341_blit_async(x,y,w,h,px)` | Waits for the previous transfer, sets the window, starts a 16-bit DMA transfer and returns while it runs. `px` must stay untouched until `ili9341_wait_idle()` or the next blit. |
 | `ili9341_fill_rect(x,y,w,h,color)` | Same, with a fixed source (fast solid fill). |
+| `ili9341_blit_flash_async(x,y,w,h,px)` | Send `w*h` pixels from XIP flash through the RP2350 XIP stream unit (stream DMA into a 2 x 1 KB RAM ring, SPI DMA out) and return when done. Claims the shared stream unit through lib/flashstream; returns `false` when audio has it, in which case the caller repaints with strips. RAM pointers fall back to plain DMA and always succeed. |
 | `ili9341_wait_idle()` | Block until DMA, SPI shifter and CS are done. Call before reusing a blit buffer or changing SPI config. |
 | `ili9341_is_busy()` | True while DMA or the SPI shifter is busy. |
 | `ili9341_read_id()` | 24-bit RDDID at ≤ 6 MHz, restores the previous clock. `0x009341` = genuine ILI9341; 0/0xFFFFFF = unprogrammed ID or no MISO. |
 | `ili9341_read_reg8(cmd)` | 8-bit status register read at ≤ 6 MHz, using the dummy-bit alignment detected by the self-test. |
 | `ili9341_self_test(&st)` | Probes RDDID, RDMADCTL, RDDCOLMOD, RDDPM; reports `miso_alive`, `madctl_ok`, `pixfmt_ok`, `display_on`, `dummy_bit`. A `false` result is expected when SDO/MISO is not wired. |
+| `ili9341_set_pin_drive(fast)` | 12 mA fast slew on SCK/MOSI/CS/DC (`true`) or the 4 mA defaults; `ili9341_init()` applies `cfg->fast_pins` itself. |
 | `ili9341_set_backlight(percent)` | 0..100 % on the PWM backlight (GP38, ~20.2 kHz). |
 | `ili9341_sleep(bool)`, `ili9341_invert(bool)` | Panel sleep and display inversion. |
 | `ili9341_set_vertical_scroll(top,area,bottom)` / `ili9341_scroll_to(line)` | Hardware vertical scroll (native 320-pixel axis only). |
-| `ili9341_get_stats(&st)` / `ili9341_reset_stats()` | `bytes_sent`, `transfers`, `dma_busy_us` since the last reset. Used by the benchmarks. |
+| `ili9341_get_stats(&st)` / `ili9341_reset_stats()` | `bytes_sent`, `transfers`, `dma_busy_us`, `flash_bytes`, `flash_blits` since the last reset. Used by the benchmarks. |
 
 ---
 
@@ -570,8 +668,18 @@ screen (an About/debug page, a custom list), use the same model:
   `gfx_draw_text`, `gfx_draw_text_clipped`, `gfx_text_width`, plus
   `gfx_rect_intersect/union/empty` and `GFX_RGB(r,g,b)`.
 - Dirty-rect API (`gfx_render.h`): `gfx_invalidate(rect)`, `gfx_invalidate_all()`,
+  `gfx_invalidate_exact(rect)` (no merging; use it for direct-layer rects),
   `gfx_has_dirty()`, `gfx_render(draw_fn, user)`, and the
-  `gfx_render_stats_t` counters.
+  `gfx_render_stats_t` counters (`pixels`, `direct_pixels`, `strip_pixels`,
+  `direct_blits`, `direct_fallbacks`).
+- Direct layers (flash -> panel DMA): call `gfx_direct_begin_frame()` once per
+  frame and `gfx_direct_add(rect, pixels, stride_px)` for an opaque image the
+  scene wants at a fixed rect. A dirty rect that shares the layer's x/width and
+  fits inside its rows is then sent by `ili9341_blit_flash_async()` instead of
+  the draw callback: **nothing may be drawn on top of a direct layer**, and
+  horizontal clipping always falls back to strips. Vertical sub-ranges work
+  through the pixel pointer (rows * stride). `gfx_direct_set_enabled(false)`
+  forces strips (the simulator uses it to prove pixel-identity).
 - Fonts live in `lib/gfx/fonts/fonts.h` (`font_inter_12/14/16sb/20b/28b`).
   Glyphs are 4bpp anti-aliased alpha, ASCII 0x20..0x7E only; other bytes are
   skipped, so sanitise UTF-8 first (`ui_ascii()` does).
@@ -589,7 +697,8 @@ screen (an About/debug page, a custom list), use the same model:
 | GPIO | GP2/3/4/8/9/21/26 breadboard buttons (active high, external pull-downs) | GP21/GP26 are board buttons; any new input pin needs an external pull-down (RP2350-E9). |
 | UART | GP0/GP1 UART0 to the debug probe (115200 8N1) | Do not take UART0. USB CDC is disabled in both apps. |
 | SPI | **SPI0 is exclusive to the display**. ILI9341_SPI = `spi0`, mode 0, MSB first, 8/16-bit frames. | Use SPI1 for the SD card (proposed GP28..GP31). |
-| DMA | **Exactly one channel**, claimed with `dma_claim_unused_channel(true)` in `ili9341_init()` (`lib/display/ili9341.c:262`). No DMA IRQ handler; completion is polled. | Claim dynamically as well; never hard-code a channel number. |
+| DMA | **Three channels**, claimed with `dma_claim_unused_channel()` in `ili9341_init()` (strip blits, XIP stream -> RAM ring, RAM ring -> SPI). No DMA IRQ handler; completion is polled. | Claim dynamically as well; never hard-code a channel number. The audio side may also need one for flash -> decoder. |
+| XIP stream | `lib/flashstream` arbitrates the single XIP stream unit. Audio has priority (`flashstream_audio_request(true)` while waiting); the display yields between 8 KB chunks. | Use `flashstream_try_claim(FLASHSTREAM_OWNER_AUDIO)` and never program `xip_ctrl_hw` directly. |
 | IRQ / alarms | **None.** `lib/ui`, `lib/gfx`, `lib/display` contain no `irq_set_*`, `add_alarm*`, `repeating_timer` or timer IRQ. The only repeating timer in the tree is the demo's 1 ms audio stand-in (`apps/pipod/audio_load_sim.c`), on core 0. | The I2S DMA IRQ stays on core 0; the UI never raises an IRQ on your core. |
 | PWM | PWM slice **11 channel A** on GP38, 150 MHz / (29 x 256) ≈ 20.2 kHz, 0..100 %. | Do not use slice 11A. |
 | RAM | `s_buf[2][320*16]` = **20,480 B** (gfx strips) + 90 B renderer state = 20,570 B; `lib/ui` static = **2,706 B**; `ili9341` = 96 B; `lib/input` = 430 B. **Total library statics: 23,802 B (~23.2 KB).** The core-1 stack is app-owned (pipod: 2,048 B). | The UI budget is 64 KB; no malloc after init. Keep other core-1 statics small. |
@@ -605,6 +714,15 @@ tools/arm-gnu/bin/arm-none-eabi-nm -S --size-sort -t d build/apps/pipod/pipod.el
 
 (These are linked-ELF numbers; per-object statics live in `.bss.<symbol>`
 sections, so sum every `.bss.*` section if you measure an object file.)
+
+Media-library addition (media pack workstream): `media_library_t` is about
+**6.0 KB** persistent (uint16 order vectors + u32 track offsets + art views),
+plus about **87 KB** of scan-time `.bss` (title copies for sorting, album/artist
+tables, one 28,800 B cover and the 4 KB TJpgDec pool) and a 4.7 KB cache sector
+buffer. pipod measured **136,848 B of .bss** and **656,196 B** (bin) after the
+media library was linked, still below the 1 MB media-pack boundary. The scan
+work area is static because there is no malloc after init.
+
 
 ---
 

@@ -12,9 +12,10 @@
 #include "pico/time.h"
 #include "ui.h"
 
+#include "media_library.h"
 #include "sim_library.h"
 
-#define QUEUE_MAX            192
+#define QUEUE_MAX            512
 #define POS_UPDATE_US        100000u  /**< report position to the UI at 10 Hz */
 #define RESTART_THRESHOLD_MS 3000u    /**< PREV inside a track restarts it */
 #define BATTERY_DRAIN_MS     15000u   /**< 1 % per 15 s of demo runtime */
@@ -37,6 +38,55 @@ static bool    s_repeat;
 static uint8_t s_volume = SIM_DEMO_INITIAL_VOLUME;
 static uint8_t s_battery = 100;
 static uint32_t s_rng = 0x1BADF00Du;
+
+/* Library the engine queues from: the real media library when a pack is
+ * present, otherwise the built-in demo tables. */
+static const ui_library_t *s_lib;
+static media_library_t    *s_media;
+
+/* --- library access ---------------------------------------------------- */
+
+static const ui_library_t *active_lib(void) {
+    return s_lib != NULL ? s_lib : sim_library_get();
+}
+
+static uint32_t lib_count(ui_list_kind_t list, uint32_t parent) {
+    const ui_library_t *lib = active_lib();
+    return lib->count != NULL ? lib->count(list, parent, lib->ctx) : 0u;
+}
+
+static uint32_t lib_id_at(ui_list_kind_t list, uint32_t parent, uint32_t index) {
+    const ui_library_t *lib = active_lib();
+    ui_list_item_t item;
+    if (lib->get_item == NULL || !lib->get_item(list, parent, index, &item, lib->ctx)) {
+        return 0u;
+    }
+    return item.id;
+}
+
+/** Fill ui_track_info_t from either the media library or the demo tables. */
+static bool song_info(uint32_t song_id, ui_track_info_t *out) {
+    if (s_media != NULL && media_library_ready(s_media)) {
+        media_track_info_t ti;
+        if (!media_library_track(s_media, song_id, &ti)) {
+            return false;
+        }
+        memset(out, 0, sizeof(*out));
+        out->track_id = song_id;
+        out->album_id = ti.album_id;
+        (void)snprintf(out->title, sizeof(out->title), "%s", ti.title);
+        (void)snprintf(out->artist, sizeof(out->artist), "%s", ti.artist);
+        (void)snprintf(out->album, sizeof(out->album), "%s", ti.album);
+        out->duration_ms = ti.duration_ms;
+        return true;
+    }
+    return sim_song_info(song_id, out);
+}
+
+void sim_player_set_library(const ui_library_t *lib, media_library_t *media) {
+    s_lib = lib;
+    s_media = media;
+}
 
 /* --- helpers ----------------------------------------------------------- */
 
@@ -65,7 +115,7 @@ static void play_index(uint16_t index) {
         return;
     }
     ui_track_info_t track;
-    if (!sim_song_info(s_queue[index], &track)) {
+    if (!song_info(s_queue[index], &track)) {
         return;
     }
     track.queue_index = (uint16_t)(index + 1u);
@@ -125,12 +175,12 @@ static void build_queue(ui_list_kind_t list, uint32_t parent_id, uint32_t select
     }
 
     s_queue_len = 0;
-    uint32_t count = sim_song_count(songs, parent);
+    uint32_t count = lib_count(songs, parent);
     if (count > QUEUE_MAX) {
         count = QUEUE_MAX;
     }
     for (uint32_t i = 0; i < count; i++) {
-        uint32_t id = sim_song_id_at(songs, parent, i);
+        uint32_t id = lib_id_at(songs, parent, i);
         if (id != 0u) {
             s_queue[s_queue_len++] = id;
         }
@@ -163,8 +213,15 @@ static void build_queue(ui_list_kind_t list, uint32_t parent_id, uint32_t select
 
 static void shuffle_all(void) {
     s_queue_len = 0;
-    for (uint32_t i = 0; i < SIM_SONG_COUNT && i < QUEUE_MAX; i++) {
-        s_queue[s_queue_len++] = SIM_FIRST_SONG_ID + i;
+    const uint32_t count = lib_count(UI_LIST_SONGS, UI_ID_ALL);
+    for (uint32_t i = 0; i < count && s_queue_len < QUEUE_MAX; i++) {
+        const uint32_t id = lib_id_at(UI_LIST_SONGS, UI_ID_ALL, i);
+        if (id != 0u) {
+            s_queue[s_queue_len++] = id;
+        }
+    }
+    if (s_queue_len == 0u) {
+        return;
     }
     shuffle_range(s_queue, s_queue_len);
     play_index(0);
@@ -287,7 +344,7 @@ void sim_player_print_status(void) {
         return;
     }
     ui_track_info_t t;
-    if (!sim_song_info(s_queue[s_queue_pos], &t)) {
+    if (!song_info(s_queue[s_queue_pos], &t)) {
         return;
     }
     const char *state = (s_state == UI_PLAY_PLAYING) ? "playing"
