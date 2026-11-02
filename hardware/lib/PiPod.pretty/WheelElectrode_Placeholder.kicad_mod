@@ -1,0 +1,11 @@
+(footprint "WheelElectrode_Placeholder"
+	(version 20240108)
+	(generator "pipod")
+	(layer "F.Cu")
+	(descr "Placeholder for one capacitive wheel electrode. The layout engineer replaces this pad with the final copper shape, no solder mask opening needed on the finished wheel.")
+	(tags "capacitive touch electrode placeholder")
+	(attr smd exclude_from_bom)
+	(property "Reference" "REF**" (at 0 -3 0) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
+	(property "Value" "E" (at 0 3 0) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
+	(pad "1" smd circle (at 0 0) (size 3 3) (layers "F.Cu"))
+)

@@ -24,3 +24,10 @@ __pycache__/
 .idea/
 Thumbs.db
 .DS_Store
+
+# KiCad local files
+hardware/.history/
+hardware/*.lck
+hardware/*.kicad_prl
+hardware/fp-info-cache
+hardware/*-backups/
