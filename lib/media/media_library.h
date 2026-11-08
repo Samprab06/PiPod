@@ -72,6 +72,13 @@ extern "C" {
 #define MEDIA_LIB_MAX_ALBUMS  128u
 #define MEDIA_LIB_MAX_ARTISTS 128u
 
+/**
+ * Safety cap on the number of audio files an SD scan indexes. The library only
+ * keeps MEDIA_LIB_MAX_TRACKS, but the scan still has to walk every file to
+ * build the cache key; 4096 keeps a pathological card from stalling the boot.
+ */
+#define MEDIA_SD_MAX_FILES 4096u
+
 /*
  * Library ids. Artist/album/track ids never collide with each other and are
  * never 0, so a 0 id can be used as "none" by callers.
@@ -110,7 +117,7 @@ typedef void (*media_scan_progress_fn)(const media_scan_report_t *report);
 typedef struct {
     bool     valid;          /**< an index is loaded and ready */
     bool     cache_hit;      /**< loaded from the cache, no parsing */
-    uint16_t files;          /**< pack entries */
+    uint16_t files;          /**< pack entries (SD: media files found) */
     uint16_t parsed;         /**< entries media_meta_parse() accepted */
     uint16_t skipped;        /**< unsupported/corrupt/over-capacity entries */
     uint16_t tracks;         /**< library tracks */
@@ -121,6 +128,8 @@ typedef struct {
     uint16_t art_albums;     /**< albums with a cached cover (real or placeholder) */
     uint16_t art_placeholders; /**< of art_albums, how many are placeholders */
     uint32_t cache_bytes;    /**< media_cache_used() after the scan */
+    uint16_t files_ignored;  /**< SD: non-audio files/dirs skipped by extension */
+    bool     file_cap_hit;   /**< SD: MEDIA_SD_MAX_FILES reached, scan truncated */
 } media_scan_stats_t;
 
 /** Full metadata of one library track, for the player and the decoder. */
@@ -154,7 +163,24 @@ typedef struct {
 
 /** One library, statically allocated by the app. Fields are private; use the
  *  accessors below. */
-typedef struct {
+typedef struct media_library media_library_t;
+
+/**
+ * Private hook installed by media_library_sd.c: open the file backing track
+ * @p track_index read-only and describe its audio payload. Kept as a function
+ * pointer so the flash-pack-only build (and its host test) does not need to
+ * link the SD backend.
+ */
+typedef bool (*media_library_sd_open_fn)(media_library_t *lib,
+                                         uint16_t track_index,
+                                         uint32_t audio_offset,
+                                         uint32_t audio_size,
+                                         media_source_t *out);
+
+/** Private hook that closes the SD audio file, if any (see media_library_release). */
+typedef void (*media_library_sd_close_fn)(media_library_t *lib);
+
+struct media_library {
     /* private */
     media_pack_t pack;
     bool         ready;
@@ -177,7 +203,16 @@ typedef struct {
         const uint8_t *base;
         uint32_t size;
     } audio_view;
-} media_library_t;
+
+    /* SD backend (zero for a flash-pack library). */
+    uint8_t  source_kind;      /**< MEDIA_LIB_SOURCE_PACK / _SD */
+    uint32_t track_path_off;   /**< cache offset of u32[track_count] path offsets */
+    void    *sd_audio_file;    /**< open storage_fs_file_t for the current track */
+    uint32_t sd_audio_offset;  /**< payload start inside that file */
+    uint32_t sd_audio_size;    /**< payload size of that track */
+    media_library_sd_open_fn sd_open;
+    media_library_sd_close_fn sd_close;
+};
 
 /**
  * @brief Open the pack and build (or load) the library index.
@@ -189,6 +224,34 @@ typedef struct {
  *         can distinguish "no pack" from "empty pack".
  */
 bool media_library_scan(media_library_t *lib, media_scan_progress_fn cb);
+
+/**
+ * @brief Build (or load) the library index from an SD card directory tree.
+ *
+ * Walks @p root_dir recursively (depth <= STORAGE_FS_MAX_DEPTH), accepts
+ * *.mp3, *.flac, *.wav, *.ogg and *.opus (case-insensitive), parses tags and
+ * embedded art with the same code as media_library_scan(), and fills the same
+ * library structures and ui_library_t. The flash scan cache is reused: the key
+ * is a hash of the file list (path, size and FAT modification stamp), so a
+ * second boot with the same card loads the index and all covers without
+ * touching any file on the card except the directory walk needed for the key.
+ *
+ * Mount the card first (storage_mount()); this function also mounts it lazily
+ * through the storage backend. The card is never written to.
+ *
+ * The 1 MB flash cache holds one index at a time: an SD scan replaces a cached
+ * flash-pack index and vice versa; the source kind is stored in the cache root
+ * record, so each scanner ignores a cache written by the other.
+ *
+ * @param lib      caller-owned, zero-initialised storage (a static is expected).
+ * @param root_dir directory to scan, e.g. STORAGE_ROOT or "0:/Music"; NULL or
+ *                 "" means STORAGE_ROOT.
+ * @param cb       optional per-file progress callback (full scans only).
+ * @return true when an index is ready. On a mount failure or an unreadable
+ *         card, false and stats.valid == false.
+ */
+bool media_library_scan_sd(media_library_t *lib, const char *root_dir,
+                           media_scan_progress_fn cb);
 
 /** @brief ui_library_t view for ui_init(), or NULL when no index is ready. */
 const ui_library_t *media_library_ui(media_library_t *lib);
@@ -205,6 +268,16 @@ bool media_library_ready(const media_library_t *lib);
  */
 bool media_library_track(media_library_t *lib, uint32_t track_id,
                          media_track_info_t *out);
+
+/**
+ * @brief Release the open SD audio file of the current track, if any.
+ *
+ * The library stays valid and the next media_library_track() reopens the file.
+ * Call this before storage_unmount() or before scanning another library while
+ * a track source is still open: the storage layer has a small fixed number of
+ * open-file slots (STORAGE_FS_MAX_OPEN). A no-op for flash-pack libraries.
+ */
+void media_library_release(media_library_t *lib);
 
 #ifdef __cplusplus
 }

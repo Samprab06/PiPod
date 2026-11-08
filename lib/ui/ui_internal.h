@@ -19,28 +19,15 @@
 #include "gfx_image.h"
 #include "gfx_render.h"
 #include "ui.h"
+#include "ui_layout.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ------------------------------------------------------------------------- */
-/* Panel geometry (landscape 320x240, docs/ui_spec.md)                       */
-/* ------------------------------------------------------------------------- */
-
-#define UI_SCREEN_W 320
-#define UI_SCREEN_H 240
-#define UI_STATUS_H 22
-#define UI_CONTENT_Y 22
-#define UI_CONTENT_H (UI_SCREEN_H - UI_CONTENT_Y)
-#define UI_ROW_H 27
-#define UI_ROWS_VISIBLE 8
-#define UI_LIST_Y (UI_CONTENT_Y + 2)
-#define UI_LIST_H (UI_ROWS_VISIBLE * UI_ROW_H)
-#define UI_SCROLLBAR_X 314
-#define UI_SCROLLBAR_W 4
-#define UI_TITLE_COL_X 148
-#define UI_TITLE_COL_W 160
+/* Panel geometry, font roles and the 320/480 layout split live in
+ * ui_layout.h. Two sets exist: the original 320x240 (ILI9341) values and a
+ * 480x320 (ST7796) set; the compile-time panel selection chooses one. */
 
 /** Maximum number of stacked screens. */
 #define UI_MAX_DEPTH 8

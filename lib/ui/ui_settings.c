@@ -14,7 +14,7 @@
 #include <string.h>
 
 #include "fonts.h"
-#include "ili9341.h"
+#include "display.h"
 #include "ui_widgets.h"
 
 /* ------------------------------------------------------------------------- */
@@ -32,7 +32,8 @@ static struct {
 } s_set;
 
 /* Only rates that clk_peri (150 MHz) can actually produce: 150 / (2 * n).
- * 75 MHz is the driver default (ili9341_config.h) and the initial selection. */
+ * 75 MHz is the driver default for the ILI9341 and the initial selection on
+ * both panels (the ST7796 driver reports the achieved rate). */
 static const uint32_t s_clock_hz[] = {18750000u, 25000000u, 37500000u, 75000000u};
 #define UI_CLOCK_DEFAULT_IDX 3u
 
@@ -47,7 +48,7 @@ static void format_mhz(char *buf, size_t cap) {
     if (buf == NULL || cap == 0u) {
         return;
     }
-    const uint32_t hz = ili9341_get_spi_clock();
+    const uint32_t hz = display_get_spi_clock();
     if (hz == 0u) {
         (void)snprintf(buf, cap, "--");
         return;
@@ -157,7 +158,7 @@ void ui_settings_activate(const ui_np_t *np, uint32_t index) {
         /* Cycle through the fixed list; the row shows the achieved clock. */
         const size_t n = sizeof s_clock_hz / sizeof s_clock_hz[0];
         s_set.clock_idx = (uint8_t)((s_set.clock_idx + 1u) % n);
-        (void)ili9341_set_spi_clock(s_clock_hz[s_set.clock_idx]);
+        (void)display_set_spi_clock(s_clock_hz[s_set.clock_idx]);
         break;
     }
     case 4:
@@ -183,7 +184,7 @@ bool ui_settings_wheel(uint32_t selected, int ticks) {
         value = 100;
     }
     s_set.backlight = (uint8_t)value;
-    ili9341_set_backlight(s_set.backlight);
+    display_set_backlight(s_set.backlight);
     return true;
 }
 
@@ -197,19 +198,24 @@ void ui_settings_about_draw(gfx_canvas_t *c, int x_off) {
     }
     gfx_fill_rect(c, x_off, UI_CONTENT_Y, UI_SCREEN_W, UI_CONTENT_H, UI_COL_BG);
 
-    ui_text_center(c, &font_inter_20b, 160 + x_off, 62, 0, "PiPod", UI_COL_TEXT);
+    ui_text_center(c, UI_FONT_TITLE, UI_SCREEN_W / 2 + x_off, UI_ABOUT_TITLE_BASE, 0, "PiPod",
+                   UI_COL_TEXT);
 
     char line[40];
     char clk[32];
     (void)snprintf(line, sizeof line, "Build %s", __DATE__);
-    ui_text_center(c, &font_inter_14, 160 + x_off, 94, 0, line, UI_COL_TEXT_2);
+    ui_text_center(c, UI_FONT_BODY, UI_SCREEN_W / 2 + x_off, UI_ABOUT_BUILD_BASE, 0, line,
+                   UI_COL_TEXT_2);
 
     format_mhz(clk, sizeof clk);
     (void)snprintf(line, sizeof line, "Display %s", clk);
-    ui_text_center(c, &font_inter_14, 160 + x_off, 120, 0, line, UI_COL_TEXT_2);
+    ui_text_center(c, UI_FONT_BODY, UI_SCREEN_W / 2 + x_off, UI_ABOUT_CLOCK_BASE, 0, line,
+                   UI_COL_TEXT_2);
 
     (void)snprintf(line, sizeof line, "Free RAM ~%lu KB", (unsigned long)free_ram_kb());
-    ui_text_center(c, &font_inter_14, 160 + x_off, 146, 0, line, UI_COL_TEXT_2);
+    ui_text_center(c, UI_FONT_BODY, UI_SCREEN_W / 2 + x_off, UI_ABOUT_RAM_BASE, 0, line,
+                   UI_COL_TEXT_2);
 
-    ui_text_center(c, &font_inter_12, 160 + x_off, 188, 0, "Purdue Proton / RP2350B", UI_COL_TEXT_2);
+    ui_text_center(c, UI_FONT_SMALL, UI_SCREEN_W / 2 + x_off, UI_ABOUT_FOOT_BASE, 0,
+                   "Purdue Proton / RP2350B", UI_COL_TEXT_2);
 }

@@ -20,26 +20,10 @@
 #include "ui_anim.h"
 #include "ui_widgets.h"
 
-/* Layout (docs/ui_spec.md). */
-#define ART_X 14
-#define ART_Y 40
-#define ART_SIZE 120
-#define REFL_Y 162
-#define REFL_H 24
-#define BAR_X 14
-#define BAR_Y 196
-#define BAR_W 292
-#define BAR_H 6
-#define LABEL_BASE 220
-
-/* One rect for the whole progress block: bar, elapsed and remaining labels.
- * The volume overlay replaces exactly this block, so both must invalidate and
- * repaint the same pixels; a narrower overlay rect leaves the labels half
- * erased (top half cleared, bottom half stale). y 186..228 per the spec. */
-#define PROGRESS_X 8
-#define PROGRESS_Y 186
-#define PROGRESS_W 304
-#define PROGRESS_H 42
+/* Layout comes from ui_layout.h: UI_ART_*, UI_BAR_*, UI_PROGRESS_*, UI_NP_*.
+ * The volume overlay replaces exactly the progress block; both that overlay and
+ * the normal bar/labels invalidate and repaint the same rectangle, otherwise a
+ * narrower overlay rect leaves the labels half erased. */
 
 #define VOL_TIMEOUT_US 1500000u
 #define VOL_FADE_S 0.15f
@@ -96,19 +80,20 @@ static struct {
 /* ------------------------------------------------------------------------- */
 
 static gfx_rect_t title_rect(void) {
-    gfx_rect_t r = {UI_TITLE_COL_X, 62, UI_TITLE_COL_W, 30};
+    gfx_rect_t r = {UI_NP_TITLE_COL_X, UI_NP_TITLE_RECT_Y, UI_NP_TITLE_COL_W,
+                    UI_NP_TITLE_RECT_H};
     return r;
 }
 
 /** Queue label + title + artist + album: everything that changes with a track.
  *  The art, reflection and progress bar have their own rects. */
 static gfx_rect_t track_text_rect(void) {
-    gfx_rect_t r = {UI_TITLE_COL_X, 48, UI_TITLE_COL_W, 98};
+    gfx_rect_t r = {UI_NP_TITLE_COL_X, UI_NP_TEXT_RECT_Y, UI_NP_TITLE_COL_W, UI_NP_TEXT_RECT_H};
     return r;
 }
 
 static gfx_rect_t progress_rect(void) {
-    gfx_rect_t r = {PROGRESS_X, PROGRESS_Y, PROGRESS_W, PROGRESS_H};
+    gfx_rect_t r = {UI_PROGRESS_X, UI_PROGRESS_Y, UI_PROGRESS_W, UI_PROGRESS_H};
     return r;
 }
 
@@ -116,12 +101,12 @@ static gfx_rect_t progress_rect(void) {
  * flash image can be sent from: the 1 px frame ring is static and lies just
  * outside it, so it never needs repainting when the image changes. */
 static gfx_rect_t art_image_rect(void) {
-    gfx_rect_t r = {ART_X, ART_Y, ART_SIZE, ART_SIZE};
+    gfx_rect_t r = {UI_ART_X, UI_ART_Y, UI_ART_SIZE, UI_ART_SIZE};
     return r;
 }
 
 static gfx_rect_t reflection_rect(void) {
-    gfx_rect_t r = {ART_X, REFL_Y, ART_SIZE, REFL_H};
+    gfx_rect_t r = {UI_ART_X, UI_ART_REFL_Y, UI_ART_SIZE, UI_ART_REFL_H};
     return r;
 }
 
@@ -132,7 +117,7 @@ static int progress_px(uint32_t pos_ms, uint32_t dur_ms) {
     if (pos_ms > dur_ms) {
         pos_ms = dur_ms;
     }
-    return (int)(((uint64_t)BAR_W * (uint64_t)pos_ms) / (uint64_t)dur_ms);
+    return (int)(((uint64_t)UI_BAR_W * (uint64_t)pos_ms) / (uint64_t)dur_ms);
 }
 
 static void scrub_exit(void) {
@@ -168,61 +153,73 @@ static const gfx_image_t *album_art(const ui_np_t *np) {
     return s_np.art;
 }
 
+/** Scale a 120x120 art-relative coordinate to the active art size. */
+static int art_px(int v) {
+    return (v * UI_ART_SCALE_NUM) / UI_ART_SCALE_DEN;
+}
+
 static void draw_reflection(gfx_canvas_t *c, const gfx_image_t *img, int ax) {
-    if (!ui_visible(c, ax, REFL_Y, ART_SIZE, REFL_H)) {
+    if (!ui_visible(c, ax, UI_ART_REFL_Y, UI_ART_SIZE, UI_ART_REFL_H)) {
         return;
     }
     const gfx_rect_t band = ui_band(c);
-    const int ys = (REFL_Y > (int)band.y) ? REFL_Y : (int)band.y;
-    const int y_end = REFL_Y + REFL_H;
+    const int ys = (UI_ART_REFL_Y > (int)band.y) ? UI_ART_REFL_Y : (int)band.y;
+    const int y_end = UI_ART_REFL_Y + UI_ART_REFL_H;
     const int ye = (y_end < (int)band.y + (int)band.h) ? y_end : (int)band.y + (int)band.h;
     const int xs = (ax > (int)band.x) ? ax : (int)band.x;
-    const int x_end = ax + ART_SIZE;
+    const int x_end = ax + UI_ART_SIZE;
     const int xe = (x_end < (int)band.x + (int)band.w) ? x_end : (int)band.x + (int)band.w;
     if (ys >= ye || xs >= xe) {
         return;
     }
 
     for (int y = ys; y < ye; y++) {
-        const int row = y - REFL_Y;
-        const int src_row = ART_SIZE - 1 - row;
-        const uint32_t sy = ((uint32_t)src_row * img->height) / (uint32_t)ART_SIZE;
-        const uint8_t alpha = (uint8_t)(77u - (77u * (uint32_t)row) / (uint32_t)REFL_H);
+        const int row = y - UI_ART_REFL_Y;
+        const int src_row = UI_ART_SIZE - 1 - row;
+        const uint32_t sy = ((uint32_t)src_row * img->height) / (uint32_t)UI_ART_SIZE;
+        const uint8_t alpha = (uint8_t)(77u - (77u * (uint32_t)row) / (uint32_t)UI_ART_REFL_H);
         const uint16_t *srow = img->pixels + (size_t)sy * img->width;
         uint16_t *dst =
             c->buf + (size_t)(y - c->area.y) * (size_t)c->area.w + (size_t)(xs - c->area.x);
         for (int x = xs; x < xe; x++) {
-            const uint32_t sx = ((uint32_t)(x - ax) * img->width) / (uint32_t)ART_SIZE;
+            const uint32_t sx = ((uint32_t)(x - ax) * img->width) / (uint32_t)UI_ART_SIZE;
             dst[x - xs] = gfx_blend(srow[sx], UI_COL_BG, alpha);
         }
     }
 }
 
 static void draw_art(gfx_canvas_t *c, const ui_np_t *np, int x_off) {
-    const int ax = ART_X + x_off;
-    if (ui_visible(c, ax - 2, ART_Y - 2, ART_SIZE + 4, ART_SIZE + 4)) {
-        gfx_draw_round_rect(c, ax - 1, ART_Y - 1, ART_SIZE + 2, ART_SIZE + 2, 3, UI_COL_FRAME);
+    const int ax = UI_ART_X + x_off;
+    if (ui_visible(c, ax - 2, UI_ART_Y - 2, UI_ART_SIZE + 4, UI_ART_SIZE + 4)) {
+        gfx_draw_round_rect(c, ax - 1, UI_ART_Y - 1, UI_ART_SIZE + 2, UI_ART_SIZE + 2,
+                            UI_ART_FRAME_R, UI_COL_FRAME);
     }
     const gfx_image_t *img = album_art(np);
     if (img != NULL && img->pixels != NULL && img->width != 0u && img->height != 0u) {
-        if (ui_visible(c, ax, ART_Y, ART_SIZE, ART_SIZE)) {
-            if (img->width == ART_SIZE && img->height == ART_SIZE) {
-                gfx_draw_image(c, ax, ART_Y, img);
+        if (ui_visible(c, ax, UI_ART_Y, UI_ART_SIZE, UI_ART_SIZE)) {
+            if (img->width == UI_ART_SIZE && img->height == UI_ART_SIZE) {
+                gfx_draw_image(c, ax, UI_ART_Y, img);
             } else {
-                gfx_draw_image_scaled(c, ax, ART_Y, ART_SIZE, ART_SIZE, img);
+                gfx_draw_image_scaled(c, ax, UI_ART_Y, UI_ART_SIZE, UI_ART_SIZE, img);
             }
         }
         draw_reflection(c, img, ax);
         return;
     }
 
-    /* Placeholder: gradient square with a music note from circles and rects. */
-    if (ui_visible(c, ax, ART_Y, ART_SIZE, ART_SIZE)) {
-        gfx_fill_gradient_v(c, ax, ART_Y, ART_SIZE, ART_SIZE, GFX_RGB(96, 132, 208),
+    /* Placeholder: gradient square with a music note from circles and rects.
+     * The note is authored in 120x120 art-relative coordinates and scaled to
+     * the active art size (1x at 320x240, 1.5x at 480x320). */
+    if (ui_visible(c, ax, UI_ART_Y, UI_ART_SIZE, UI_ART_SIZE)) {
+        gfx_fill_gradient_v(c, ax, UI_ART_Y, UI_ART_SIZE, UI_ART_SIZE, GFX_RGB(96, 132, 208),
                             GFX_RGB(38, 54, 110));
-        gfx_fill_circle(c, ax + 52, 136, 9, UI_COL_SEL_TEXT);
-        gfx_fill_rect(c, ax + 59, 68, 3, 68, UI_COL_SEL_TEXT);
-        gfx_fill_triangle(c, ax + 62, 68, ax + 62, 86, ax + 78, 78, UI_COL_SEL_TEXT);
+        gfx_fill_circle(c, ax + art_px(UI_ART_NOTE_CX), UI_ART_Y + art_px(UI_ART_NOTE_CY),
+                        art_px(UI_ART_NOTE_R), UI_COL_SEL_TEXT);
+        gfx_fill_rect(c, ax + art_px(UI_ART_NOTE_STEM_X), UI_ART_Y + art_px(UI_ART_NOTE_STEM_Y),
+                      art_px(UI_ART_NOTE_STEM_W), art_px(UI_ART_NOTE_STEM_H), UI_COL_SEL_TEXT);
+        gfx_fill_triangle(c, ax + art_px(62), UI_ART_Y + art_px(28), ax + art_px(62),
+                          UI_ART_Y + art_px(46), ax + art_px(78), UI_ART_Y + art_px(38),
+                          UI_COL_SEL_TEXT);
     }
 }
 
@@ -248,12 +245,14 @@ static void draw_volume(gfx_canvas_t *c, int x_off, uint8_t alpha) {
     }
     gfx_fill_rect_alpha(c, r.x + x_off, r.y, r.w, r.h, UI_COL_BG, alpha);
 
-    ui_draw_glyph_speaker_alpha(c, 20 + x_off, 194, false, UI_COL_TEXT, alpha);
-    ui_draw_glyph_speaker_alpha(c, 292 + x_off, 194, true, UI_COL_TEXT, alpha);
+    ui_draw_glyph_speaker_alpha(c, UI_VOL_SPK_LOW_X + x_off, UI_VOL_SPK_Y, false, UI_COL_TEXT,
+                                alpha);
+    ui_draw_glyph_speaker_alpha(c, UI_VOL_SPK_HIGH_X + x_off, UI_VOL_SPK_Y, true, UI_COL_TEXT,
+                                alpha);
 
-    const int x = 48 + x_off;
-    const int y = BAR_Y;
-    const int w = 242;
+    const int x = UI_VOL_BAR_X + x_off;
+    const int y = UI_BAR_Y;
+    const int w = UI_VOL_BAR_W;
     int fill = (int)(((uint32_t)w * (uint32_t)s_np.vol_value) / 100u);
     if (fill < 0) {
         fill = 0;
@@ -262,14 +261,14 @@ static void draw_volume(gfx_canvas_t *c, int x_off, uint8_t alpha) {
         fill = w;
     }
     if (alpha >= 255u) {
-        gfx_fill_round_rect(c, x, y, w, BAR_H, BAR_H / 2, UI_COL_TRACK);
+        gfx_fill_round_rect(c, x, y, w, UI_BAR_H, UI_BAR_H / 2, UI_COL_TRACK);
         if (fill > 0) {
-            gfx_fill_round_rect(c, x, y, fill, BAR_H, BAR_H / 2, UI_COL_SEL_BOT);
+            gfx_fill_round_rect(c, x, y, fill, UI_BAR_H, UI_BAR_H / 2, UI_COL_SEL_BOT);
         }
     } else {
-        glyph_fill(c, x, y, w, BAR_H, UI_COL_TRACK, alpha);
+        glyph_fill(c, x, y, w, UI_BAR_H, UI_COL_TRACK, alpha);
         if (fill > 0) {
-            glyph_fill(c, x, y, fill, BAR_H, UI_COL_SEL_BOT, alpha);
+            glyph_fill(c, x, y, fill, UI_BAR_H, UI_COL_SEL_BOT, alpha);
         }
     }
 }
@@ -350,7 +349,7 @@ void ui_nowplaying_direct_layers(const ui_np_t *np, const ui_screen_t *s) {
     const gfx_image_t *img = album_art(np);
     /* Only a native 120x120 image maps 1:1 onto the art rectangle; anything
      * else is scaled by gfx_draw_image_scaled() and stays on the strip path. */
-    if (img == NULL || img->pixels == NULL || img->width != ART_SIZE || img->height != ART_SIZE) {
+    if (img == NULL || img->pixels == NULL || img->width != UI_ART_SIZE || img->height != UI_ART_SIZE) {
         return;
     }
     gfx_rect_t r = art_image_rect();
@@ -366,12 +365,13 @@ void ui_nowplaying_invalidate_view(const ui_np_t *np, const ui_screen_t *s) {
      * repaints the same pixels through the strip path, so the image can then be
      * sent straight from flash without a stale stripe. */
     const gfx_image_t *img = album_art(np);
-    if (img != NULL && img->pixels != NULL && img->width == ART_SIZE && img->height == ART_SIZE) {
+    if (img != NULL && img->pixels != NULL && img->width == UI_ART_SIZE && img->height == UI_ART_SIZE) {
         ui_invalidate_exact(art_image_rect());
     }
 }
 
-void ui_nowplaying_click(const ui_np_t *np, uint32_t now_us) {    if (np == NULL || !np->has_track) {
+void ui_nowplaying_click(const ui_np_t *np, uint32_t now_us) {
+    if (np == NULL || !np->has_track) {
         return;
     }
     if (s_np.scrubbing) {
@@ -441,8 +441,8 @@ void ui_nowplaying_step(const ui_np_t *np, ui_screen_t *s, float dt_s, uint32_t 
     /* Marquee: 30 px/s with a 1.5 s pause at each end. */
     char title[UI_TITLE_MAX];
     ui_ascii(np->track.title, title, sizeof title);
-    const int width = gfx_text_width(&font_inter_20b, title);
-    if (width <= UI_TITLE_COL_W) {
+    const int width = gfx_text_width(UI_FONT_TITLE, title);
+    if (width <= UI_NP_TITLE_COL_W) {
         if (s_np.mq_offset != 0.0f || s_np.mq_width != 0) {
             s_np.mq_offset = 0.0f;
             s_np.mq_width = 0;
@@ -459,7 +459,7 @@ void ui_nowplaying_step(const ui_np_t *np, ui_screen_t *s, float dt_s, uint32_t 
             s_np.mq_phase = 0;
             s_np.mq_drawn = -1;
         }
-        const float max_off = (float)(width - UI_TITLE_COL_W);
+        const float max_off = (float)(width - UI_NP_TITLE_COL_W);
         switch (s_np.mq_phase) {
         case 0:
             s_np.mq_t += dt_s;
@@ -542,8 +542,8 @@ void ui_nowplaying_draw(gfx_canvas_t *c, const ui_np_t *np, const ui_screen_t *s
     gfx_fill_rect(c, x_off, UI_CONTENT_Y, UI_SCREEN_W, UI_CONTENT_H, UI_COL_BG);
 
     if (!np->has_track) {
-        ui_text_center(c, &font_inter_20b, 160 + x_off, 132, 0, "Nothing playing",
-                       UI_COL_TEXT_2);
+        ui_text_center(c, UI_FONT_TITLE, UI_SCREEN_W / 2 + x_off, UI_NP_EMPTY_BASE, 0,
+                       "Nothing playing", UI_COL_TEXT_2);
         return;
     }
 
@@ -553,29 +553,29 @@ void ui_nowplaying_draw(gfx_canvas_t *c, const ui_np_t *np, const ui_screen_t *s
         char idx[24];
         (void)snprintf(idx, sizeof idx, "%u of %u", (unsigned)np->track.queue_index,
                        (unsigned)np->track.queue_length);
-        ui_text(c, &font_inter_12, UI_TITLE_COL_X + x_off, 52, UI_TITLE_COL_W, idx,
-                UI_COL_TEXT_2);
+        ui_text(c, UI_FONT_SMALL, UI_NP_TITLE_COL_X + x_off, UI_NP_QUEUE_BASE, UI_NP_TITLE_COL_W,
+                idx, UI_COL_TEXT_2);
     }
 
     char title[UI_TITLE_MAX];
     ui_ascii(np->track.title, title, sizeof title);
-    if (s_np.mq_width > UI_TITLE_COL_W) {
+    if (s_np.mq_width > UI_NP_TITLE_COL_W) {
         const gfx_rect_t saved = c->clip;
         gfx_rect_t tr = title_rect();
         tr.x = (int16_t)(tr.x + x_off);
         gfx_set_clip(c, gfx_rect_intersect(saved, tr));
-        (void)gfx_draw_text(c, &font_inter_20b, UI_TITLE_COL_X + x_off - s_np.mq_drawn, 84, title,
-                            UI_COL_TEXT);
+        (void)gfx_draw_text(c, UI_FONT_TITLE, UI_NP_TITLE_COL_X + x_off - s_np.mq_drawn,
+                            UI_NP_TITLE_BASE, title, UI_COL_TEXT);
         gfx_set_clip(c, saved);
     } else {
-        ui_text(c, &font_inter_20b, UI_TITLE_COL_X + x_off, 84, UI_TITLE_COL_W, title,
-                UI_COL_TEXT);
+        ui_text(c, UI_FONT_TITLE, UI_NP_TITLE_COL_X + x_off, UI_NP_TITLE_BASE, UI_NP_TITLE_COL_W,
+                title, UI_COL_TEXT);
     }
 
-    ui_text(c, &font_inter_14, UI_TITLE_COL_X + x_off, 108, UI_TITLE_COL_W, np->track.artist,
-            UI_COL_TEXT);
-    ui_text(c, &font_inter_14, UI_TITLE_COL_X + x_off, 128, UI_TITLE_COL_W, np->track.album,
-            UI_COL_TEXT_2);
+    ui_text(c, UI_FONT_BODY, UI_NP_TITLE_COL_X + x_off, UI_NP_ARTIST_BASE, UI_NP_TITLE_COL_W,
+            np->track.artist, UI_COL_TEXT);
+    ui_text(c, UI_FONT_BODY, UI_NP_TITLE_COL_X + x_off, UI_NP_ALBUM_BASE, UI_NP_TITLE_COL_W,
+            np->track.album, UI_COL_TEXT_2);
 
     const uint32_t pos = s_np.scrubbing ? s_np.scrub_pos : np->position_ms;
     const uint32_t dur = np->track.duration_ms;
@@ -584,13 +584,14 @@ void ui_nowplaying_draw(gfx_canvas_t *c, const ui_np_t *np, const ui_screen_t *s
     if (ui_visible(c, block.x + x_off, block.y, block.w, block.h)) {
         if (!overlay) {
             /* Overlay hidden: the whole progress block, labels included. */
-            ui_draw_progress(c, BAR_X + x_off, BAR_Y, BAR_W, BAR_H, pos, dur, s_np.scrubbing);
+            ui_draw_progress(c, UI_BAR_X + x_off, UI_BAR_Y, UI_BAR_W, UI_BAR_H, pos, dur,
+                             s_np.scrubbing);
 
             char buf[16];
             ui_format_time(buf, sizeof buf, pos, false);
-            ui_text(c, &font_inter_12, BAR_X + x_off, LABEL_BASE, 90, buf, UI_COL_TEXT_2);
+            ui_text(c, UI_FONT_SMALL, UI_BAR_X + x_off, UI_BAR_LABEL_BASE, 90, buf, UI_COL_TEXT_2);
             ui_format_time(buf, sizeof buf, (dur > pos) ? (dur - pos) : 0u, true);
-            ui_text_right(c, &font_inter_12, BAR_X + BAR_W + x_off, LABEL_BASE, 90, buf,
+            ui_text_right(c, UI_FONT_SMALL, UI_BAR_X + UI_BAR_W + x_off, UI_BAR_LABEL_BASE, 90, buf,
                           UI_COL_TEXT_2);
         } else {
             /* Overlay visible: it replaces the block (bar and both time

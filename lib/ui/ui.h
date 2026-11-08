@@ -193,7 +193,7 @@ typedef struct {
 } ui_config_t;
 
 /** Initialise UI state and the renderer and draw the main menu. The display
- *  must already be initialised (ili9341_init). UI core only. */
+ *  must already be initialised (display_init). UI core only. */
 void ui_init(const ui_config_t *cfg);
 
 /** Run one UI iteration: drain input, step animations, render dirty regions.

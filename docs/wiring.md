@@ -8,6 +8,14 @@ moves, it moves in those files first.
 Where a statement depends on the exact ILI9341 module you bought, it is marked
 **module-dependent** — check your board before powering up.
 
+> **Breadboard v2:** the PiPod breadboard build adds TTP223 touch pads on
+> GP2-GP7, moves play/pause to a pad and keeps SELECT/MENU on the on-board
+> buttons. For the complete breadboard map (both displays, microSD, TTP223,
+> power and build/test commands) see
+> [breadboard_pinout.md](breadboard_pinout.md). Section 3 below describes the
+> original discrete-button wiring that `input_buttons_default_map()` still
+> uses; the breadboard app no longer uses that map.
+
 ## 1. Hardware in one paragraph
 
 - **Board:** Purdue Proton, RP2350B (QFN-80), 48 GPIOs, 520 KB SRAM, **no
@@ -98,6 +106,10 @@ debounces with a 5 ms integrator and repeats the wheel at 250 ms then every
 80 ms (`lib/input/input_buttons.c:14-16`).
 
 ## 4. Pin budget for the whole team
+
+> **Breadboard v2 supersedes the "proposed" rows below:** GP2-GP7 are the
+> TTP223 pads and GP28-GP31 are the microSD card on SPI1. The complete map is
+> in [breadboard_pinout.md](breadboard_pinout.md).
 
 **Display owns `GP32`–`GP38`.** Buttons above are wired, board pins are fixed.
 The "proposed" rows are a suggested allocation for the other subsystems and are

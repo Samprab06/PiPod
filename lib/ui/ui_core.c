@@ -17,11 +17,11 @@
 #include <string.h>
 
 #include "gfx_render.h"
-#include "ili9341.h"
+#include "display.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
 #include "ui_anim.h"
-#include "ui_assets.h"
+#include "ui_assets_sel.h"
 #include "ui_widgets.h"
 
 #define UI_FPS_DEFAULT 30u
@@ -646,7 +646,7 @@ void ui_render_now(void) {
     }
     ui_build_direct_layers();
     gfx_render(scene_draw, NULL);
-    ili9341_wait_idle();
+    display_wait_idle();
 }
 
 /* ------------------------------------------------------------------------- */
@@ -785,18 +785,18 @@ void ui_task(void) {
 
     bool rendered = false;
     if (gfx_has_dirty()) {
-        ili9341_stats_t disp0;
-        ili9341_stats_t disp1;
+        display_stats_t disp0;
+        display_stats_t disp1;
         gfx_render_stats_t g0;
         gfx_render_stats_t g1;
-        ili9341_get_stats(&disp0);
+        display_get_stats(&disp0);
         gfx_render_get_stats(&g0);
 
         ui_build_direct_layers();
         gfx_render(scene_draw, NULL);
-        ili9341_wait_idle();
+        display_wait_idle();
 
-        ili9341_get_stats(&disp1);
+        display_get_stats(&disp1);
         gfx_render_get_stats(&g1);
         s_perf.frames++;
         s_perf.pixels += (uint64_t)(g1.pixels - g0.pixels);

@@ -1,29 +1,30 @@
 /**
  * \file gfx_render.h
- * \brief Dirty-rectangle manager and strip renderer for the ILI9341.
+ * \brief Dirty-rectangle manager and strip renderer for the display layer.
  *
  * There is no framebuffer. The scene is redrawn on demand into one of two
- * 320 x GFX_STRIP_H RGB565 strip buffers (2 x 10 KB), and each band is pushed
- * to the panel with ili9341_blit_async().
+ * GFX_SCREEN_W x GFX_STRIP_H RGB565 strip buffers (30 KB total at 480x320,
+ * 20 KB at 320x240), and each band is pushed to the panel with
+ * display_blit_async().
  *
  * Typical frame:
  * \code
- * gfx_invalidate((gfx_rect_t){0, 40, 320, 24});
+ * gfx_invalidate((gfx_rect_t){0, 40, GFX_SCREEN_W, 24});
  * gfx_render(scene_draw, &scene);
  * // ... sleep until the next frame
  * \endcode
  *
  * The draw callback paints the WHOLE scene; it must paint every pixel of the
  * band it is given (clipping takes care of the rest). Everything outside
- * canvas->area is discarded, so the same function works for a 320 x 16 band, a
- * small dirty rect band, or the whole panel.
+ * canvas->area is discarded, so the same function works for a
+ * GFX_SCREEN_W x 16 band, a small dirty rect band, or the whole panel.
  *
- * Double-buffer invariant: ili9341_blit_async() waits for the previous transfer
- * before starting a new one, so while buffer N is on the wire the renderer is
- * free to write buffer N ^ 1. gfx_render() keeps the parity across calls and
- * never starts a transfer from the buffer that is still in flight. The final
- * transfer is deliberately NOT awaited; the next ili9341_blit_async() (or an
- * explicit ili9341_wait_idle()) completes it.
+ * Double-buffer invariant: display_blit_async() waits for the previous
+ * transfer before starting a new one, so while buffer N is on the wire the
+ * renderer is free to write buffer N ^ 1. gfx_render() keeps the parity across
+ * calls and never starts a transfer from the buffer that is still in flight.
+ * The final transfer is deliberately NOT awaited; the next
+ * display_blit_async() (or an explicit display_wait_idle()) completes it.
  */
 
 #ifndef GFX_RENDER_H
@@ -33,6 +34,7 @@
 #include <stdint.h>
 
 #include "gfx.h"
+#include "gfx_config.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,7 +78,7 @@ void gfx_direct_begin_frame(void);
  *
  * The layer is only used for a dirty rect that shares the layer's x and width
  * exactly and lies entirely inside its vertical extent; that rect is then sent
- * with ili9341_blit_flash_async() (XIP stream unit) instead of being rendered
+ * with display_blit_flash_async() (XIP stream unit) instead of being rendered
  * into strip buffers. A vertical sub-range is handled by offsetting the pixel
  * pointer by rows * stride_px, so partial rows at the top/bottom edge work.
  *
@@ -145,7 +147,7 @@ void gfx_invalidate_exact(gfx_rect_t r);
 /**
  * \brief Initialise the renderer state (buffers, dirty list, statistics).
  *
- * Call once after ili9341_init(); it does not touch the panel.
+ * Call once after display_init(); it does not touch the panel.
  */
 void gfx_render_init(void);
 
@@ -172,10 +174,10 @@ bool gfx_has_dirty(void);
  *
  * Each dirty rect that is exactly covered by a direct layer (same x/width,
  * inside its vertical extent, direct path enabled) is sent in one
- * ili9341_blit_flash_async() call and skipped by the draw callback. Every other
+ * display_blit_flash_async() call and skipped by the draw callback. Every other
  * rect is split into bands of at most GFX_STRIP_H rows (stride = rect width);
  * for each band the canvas area and clip are set and \p draw is called, then
- * the band is handed to ili9341_blit_async(). Direct blits are synchronous and
+ * the band is handed to display_blit_async(). Direct blits are synchronous and
  * strip blits are awaited by the next transfer, so the two kinds never overlap
  * on the SPI bus. The dirty list is cleared before returning and the last
  * strip DMA transfer is left running.
@@ -195,7 +197,7 @@ typedef struct {
     uint32_t max_render_us;  /**< Longest gfx_render() call seen, us. */
     uint32_t direct_pixels;  /**< Pixels sent through a direct layer (flash DMA). */
     uint32_t strip_pixels;   /**< Pixels rendered into strip buffers. */
-    uint32_t direct_blits;   /**< Direct rects sent by ili9341_blit_flash_async(). */
+    uint32_t direct_blits;   /**< Direct rects sent by display_blit_flash_async(). */
     uint32_t direct_fallbacks; /**< Direct rects the driver refused (stream busy). */
 } gfx_render_stats_t;
 

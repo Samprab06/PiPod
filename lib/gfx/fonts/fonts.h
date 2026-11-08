@@ -17,5 +17,8 @@ extern const gfx_font_t font_inter_14; /* 14 px, weight 400 - body */
 extern const gfx_font_t font_inter_16sb; /* 16 px, weight 600 - list item selected */
 extern const gfx_font_t font_inter_20b; /* 20 px, weight 700 - screen title */
 extern const gfx_font_t font_inter_28b; /* 28 px, weight 700 - now-playing title */
+extern const gfx_font_t font_inter_16; /* 16 px, weight 400 - 480x320 body small / captions */
+extern const gfx_font_t font_inter_18; /* 18 px, weight 400 - 480x320 body / status title */
+extern const gfx_font_t font_inter_22sb; /* 22 px, weight 600 - 480x320 list item */
 
 #endif /* LIB_GFX_FONTS_FONTS_H */

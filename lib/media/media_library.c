@@ -15,6 +15,7 @@
 #include "flash_layout.h"
 #include "media_art.h"
 #include "media_cache.h"
+#include "media_library_internal.h"
 #include "media_meta.h"
 #include "media_pack.h"
 
@@ -27,9 +28,9 @@
 #define LIB_USER_MAGIC2 'L'
 #define LIB_USER_MAGIC3 'B'
 #define LIB_ROOT_MAGIC  "PPLR"
-#define LIB_LAYOUT_VERSION 1u
+#define LIB_LAYOUT_VERSION 2u
 
-#define LIB_ROOT_SIZE      64u
+#define LIB_ROOT_SIZE      80u
 #define LIB_TRACK_BLOCK    160u /**< fixed track record, includes title+artist */
 #define LIB_ARTIST_REC     56u  /**< 48-byte name + album range */
 #define LIB_ALBUM_REC      64u  /**< 48-byte name + artist/song range/art */
@@ -89,6 +90,14 @@
 #define ROOT_OFF_CACHE_BYTES  52u
 #define ROOT_OFF_TRACK_BLOCK  56u
 #define ROOT_OFF_ARTIST_REC_SZ 60u
+/* Version 2 additions (SD-backed libraries). */
+#define ROOT_OFF_TRACK_PATH   64u /* u32: cache offset of u32[track_count] */
+#define ROOT_OFF_SOURCE       68u /* u8: MEDIA_LIB_SOURCE_* */
+#define ROOT_OFF_RESERVED     69u /* u8 */
+#define ROOT_OFF_FILES        70u /* u16 */
+#define ROOT_OFF_FILES_IGNORED 72u /* u16 */
+#define ROOT_OFF_FILE_CAP     74u /* u8 */
+/* 75..79 reserved */
 
 /** Album cover state while scanning (the cached enum is media_album_art_state_t). */
 #define ART_STATE_UNTRIED     0xFFu
@@ -213,6 +222,7 @@ typedef struct {
     uint16_t track_album[MEDIA_LIB_MAX_TRACKS];
     uint16_t track_disc[MEDIA_LIB_MAX_TRACKS];
     uint16_t track_no[MEDIA_LIB_MAX_TRACKS];
+    uint32_t track_path_off[MEDIA_LIB_MAX_TRACKS]; /**< SD: cache offset of the path */
     char     album_name[MEDIA_LIB_MAX_ALBUMS][MEDIA_NAME_MAX];
     uint16_t album_artist[MEDIA_LIB_MAX_ALBUMS];
     uint32_t album_art_off[MEDIA_LIB_MAX_ALBUMS];
@@ -222,6 +232,7 @@ typedef struct {
     char     artist_name[MEDIA_LIB_MAX_ARTISTS][MEDIA_NAME_MAX];
     uint16_t artist_album_first[MEDIA_LIB_MAX_ARTISTS];
     uint16_t artist_album_count[MEDIA_LIB_MAX_ARTISTS];
+    uint8_t  source_kind;
 } media_scan_work_t;
 
 static media_scan_work_t s_work;
@@ -530,6 +541,31 @@ static bool load_index(media_library_t *lib) {
     st->art_albums = 0;
     st->art_placeholders = 0;
 
+    /* Version 2: source kind, SD path table and the file counters. */
+    lib->source_kind = root[ROOT_OFF_SOURCE];
+    lib->track_path_off = rd32(root + ROOT_OFF_TRACK_PATH);
+    st->files = rd16(root + ROOT_OFF_FILES);
+    st->files_ignored = rd16(root + ROOT_OFF_FILES_IGNORED);
+    st->file_cap_hit = root[ROOT_OFF_FILE_CAP] != 0u;
+    if (lib->source_kind == MEDIA_LIB_SOURCE_SD) {
+        if (nt == 0u ||
+            !range_ok(lib->track_path_off, (uint32_t)nt * 4u, cache_bytes)) {
+            return false;
+        }
+        const uint8_t *paths = media_cache_ptr(lib->track_path_off);
+        if (paths == NULL) {
+            return false;
+        }
+        for (uint16_t i = 0; i < nt; i++) {
+            const uint32_t path_off = rd32(paths + (uint32_t)i * 4u);
+            if (path_off < MEDIA_CACHE_DATA_OFFSET || path_off >= cache_bytes) {
+                return false;
+            }
+        }
+    } else {
+        lib->track_path_off = 0u;
+    }
+
     for (uint16_t i = 0; i < na; i++) {
         const uint8_t *rec = media_cache_ptr(al_off + (uint32_t)i * LIB_ALBUM_REC);
         if (rec == NULL) {
@@ -555,162 +591,193 @@ static bool load_index(media_library_t *lib) {
     return true;
 }
 
+bool media_scan_load_cached(media_library_t *lib) {
+    return load_index(lib);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Full scan                                                                */
 /* ------------------------------------------------------------------------- */
 
-static bool cache_write_or_fail(const void *data, uint32_t len, uint32_t *off) {
-    return media_cache_write(data, len, off);
-}
-
-static bool full_scan(media_library_t *lib, media_scan_progress_fn cb) {
+bool media_scan_begin(media_library_t *lib, uint16_t files, uint8_t source_kind) {
     if (!media_cache_reset()) {
         return false;
     }
     memset(&s_work, 0, sizeof(s_work));
     memset(&lib->stats, 0, sizeof(lib->stats));
-
-    media_scan_stats_t *st = &lib->stats;
-    st->files = media_pack_count(&lib->pack);
+    s_work.source_kind = source_kind;
+    lib->source_kind = source_kind;
+    lib->track_path_off = 0u;
+    lib->stats.files = files;
     lib->track_count = 0;
     lib->album_count = 0;
     lib->artist_count = 0;
+    return true;
+}
 
-    uint16_t nt = 0;
-    uint16_t na = 0;
-    uint16_t nr = 0;
+int16_t media_scan_one(media_library_t *lib, media_scan_progress_fn cb,
+                       uint16_t index, uint16_t count, const char *name,
+                       const media_source_t *src) {
+    media_scan_stats_t *st = &lib->stats;
+    media_scan_report_t report;
+    memset(&report, 0, sizeof(report));
+    report.index = index;
+    report.count = count;
+    report.name = name;
+    report.album_index = 0xFFFFu;
+    report.meta_status = (int8_t)MEDIA_ERR_IO;
 
-    for (uint16_t i = 0; i < st->files; i++) {
-        media_scan_report_t report;
-        memset(&report, 0, sizeof(report));
-        report.index = i;
-        report.count = st->files;
-        report.name = media_pack_name(&lib->pack, i);
-        report.album_index = 0xFFFFu;
-        report.meta_status = (int8_t)MEDIA_ERR_IO;
-
-        media_pack_file_t file;
-        if (!media_pack_file_at(&lib->pack, i, &file)) {
-            st->skipped++;
-            if (cb != NULL) {
-                cb(&report);
-            }
-            continue;
-        }
-        media_source_t src;
-        if (!media_pack_source_ex(&lib->pack, i, &file, &src)) {
-            st->skipped++;
-            if (cb != NULL) {
-                cb(&report);
-            }
-            continue;
-        }
-
-        media_meta_t meta;
-        memset(&meta, 0, sizeof(meta));
-        const media_status_t ms =
-            media_meta_parse(&src, report.name, &meta, s_work.scratch,
-                             sizeof(s_work.scratch));
-        st->parse_calls++;
-        report.meta_status = (int8_t)ms;
-        if (ms != MEDIA_OK) {
-            st->skipped++;
-            if (cb != NULL) {
-                cb(&report);
-            }
-            continue;
-        }
-        st->parsed++;
-
-        if (nt >= MEDIA_LIB_MAX_TRACKS) {
-            st->skipped++; /* track cap: do not create an empty album */
-            if (cb != NULL) {
-                cb(&report);
-            }
-            continue;
-        }
-
-        const char *artist = meta.album_artist[0] != '\0' ? meta.album_artist
-                                                          : meta.artist;
-        if (artist[0] == '\0') {
-            artist = "Unknown Artist";
-        }
-        const char *album = meta.album[0] != '\0' ? meta.album : "Unknown Album";
-
-        int ai = find_artist(artist, nr);
-        if (ai < 0) {
-            if (nr >= MEDIA_LIB_MAX_ARTISTS) {
-                st->skipped++; /* over capacity: keep the rest usable */
-                if (cb != NULL) {
-                    cb(&report);
-                }
-                continue;
-            }
-            ai = (int)nr++;
-            copy_name(s_work.artist_name[ai], sizeof(s_work.artist_name[ai]),
-                      artist);
-        }
-
-        int al = find_album((uint16_t)ai, album, na);
-        if (al < 0) {
-            if (na >= MEDIA_LIB_MAX_ALBUMS) {
-                st->skipped++;
-                if (cb != NULL) {
-                    cb(&report);
-                }
-                continue;
-            }
-            al = (int)na++;
-            copy_name(s_work.album_name[al], sizeof(s_work.album_name[al]), album);
-            s_work.album_artist[al] = (uint16_t)ai;
-            s_work.album_art_state[al] = ART_STATE_UNTRIED;
-            s_work.album_song_first[al] = 0xFFFFu;
-            s_work.album_song_count[al] = 0u;
-        }
-
-        decode_album_art(lib, (uint16_t)al, &src, &meta);
-
-        uint8_t block[LIB_TRACK_BLOCK];
-        memset(block, 0, sizeof(block));
-        wr16(block + TB_FILE, i);
-        wr16(block + TB_ALBUM, (uint16_t)al);
-        wr16(block + TB_DISC, meta.disc);
-        wr16(block + TB_DISC_TOTAL, meta.disc_total);
-        wr16(block + TB_TRACK, meta.track);
-        wr16(block + TB_TRACK_TOTAL, meta.track_total);
-        wr32(block + TB_DURATION, meta.duration_ms);
-        wr32(block + TB_SAMPLE_RATE, meta.sample_rate);
-        wr32(block + TB_BITRATE, meta.bitrate_kbps);
-        wr32(block + TB_AUDIO_OFF, meta.audio_offset);
-        wr32(block + TB_AUDIO_SIZE, meta.audio_size);
-        block[TB_FORMAT] = meta.format;
-        block[TB_CHANNELS] = meta.channels;
-        block[TB_BITS] = meta.bits_per_sample;
-        copy_name((char *)(void *)(block + LIB_TRACK_TITLE_OFF), MEDIA_TITLE_MAX,
-                  meta.title);
-        copy_name((char *)(void *)(block + LIB_TRACK_ARTIST_OFF), MEDIA_NAME_MAX,
-                  meta.artist);
-
-        uint32_t off = 0;
-        if (!cache_write_or_fail(block, sizeof(block), &off)) {
-            return false;
-        }
-        lib->track_table[nt] = off;
-        copy_name(s_work.title[nt], MEDIA_TITLE_MAX, meta.title);
-        s_work.track_album[nt] = (uint16_t)al;
-        s_work.track_disc[nt] = meta.disc;
-        s_work.track_no[nt] = meta.track;
-        nt++;
-
-        report.meta = &meta;
-        report.album_index = (uint16_t)al;
-        report.album_art = s_work.album_art_state[al] == ART_STATE_UNTRIED
-                               ? (uint8_t)MEDIA_LIB_ART_NONE
-                               : s_work.album_art_state[al];
+    media_meta_t meta;
+    memset(&meta, 0, sizeof(meta));
+    const media_status_t ms =
+        media_meta_parse(src, name, &meta, s_work.scratch, sizeof(s_work.scratch));
+    st->parse_calls++;
+    report.meta_status = (int8_t)ms;
+    if (ms != MEDIA_OK) {
+        st->skipped++;
         if (cb != NULL) {
             cb(&report);
         }
+        return -1;
     }
+    st->parsed++;
+
+    if (lib->track_count >= MEDIA_LIB_MAX_TRACKS) {
+        st->skipped++; /* track cap: do not create an empty album */
+        if (cb != NULL) {
+            cb(&report);
+        }
+        return -1;
+    }
+
+    const char *artist = meta.album_artist[0] != '\0' ? meta.album_artist
+                                                      : meta.artist;
+    if (artist[0] == '\0') {
+        artist = "Unknown Artist";
+    }
+    const char *album = meta.album[0] != '\0' ? meta.album : "Unknown Album";
+
+    uint16_t na = lib->album_count;
+    uint16_t nr = lib->artist_count;
+
+    int ai = find_artist(artist, nr);
+    if (ai < 0) {
+        if (nr >= MEDIA_LIB_MAX_ARTISTS) {
+            st->skipped++; /* over capacity: keep the rest usable */
+            if (cb != NULL) {
+                cb(&report);
+            }
+            return -1;
+        }
+        ai = (int)nr++;
+        copy_name(s_work.artist_name[ai], sizeof(s_work.artist_name[ai]), artist);
+    }
+
+    int al = find_album((uint16_t)ai, album, na);
+    if (al < 0) {
+        if (na >= MEDIA_LIB_MAX_ALBUMS) {
+            st->skipped++;
+            if (cb != NULL) {
+                cb(&report);
+            }
+            return -1;
+        }
+        al = (int)na++;
+        copy_name(s_work.album_name[al], sizeof(s_work.album_name[al]), album);
+        s_work.album_artist[al] = (uint16_t)ai;
+        s_work.album_art_state[al] = ART_STATE_UNTRIED;
+        s_work.album_song_first[al] = 0xFFFFu;
+        s_work.album_song_count[al] = 0u;
+    }
+    lib->album_count = na;
+    lib->artist_count = nr;
+
+    decode_album_art(lib, (uint16_t)al, src, &meta);
+
+    /* The SD backend has to keep audio_size inside the real file. */
+    uint32_t audio_size = meta.audio_size;
+    if (lib->source_kind == MEDIA_LIB_SOURCE_SD && src != NULL) {
+        if (meta.audio_offset >= src->size) {
+            audio_size = 0u;
+        } else if (audio_size > src->size - meta.audio_offset) {
+            audio_size = src->size - meta.audio_offset;
+        }
+    }
+
+    uint8_t block[LIB_TRACK_BLOCK];
+    memset(block, 0, sizeof(block));
+    wr16(block + TB_FILE, index);
+    wr16(block + TB_ALBUM, (uint16_t)al);
+    wr16(block + TB_DISC, meta.disc);
+    wr16(block + TB_DISC_TOTAL, meta.disc_total);
+    wr16(block + TB_TRACK, meta.track);
+    wr16(block + TB_TRACK_TOTAL, meta.track_total);
+    wr32(block + TB_DURATION, meta.duration_ms);
+    wr32(block + TB_SAMPLE_RATE, meta.sample_rate);
+    wr32(block + TB_BITRATE, meta.bitrate_kbps);
+    wr32(block + TB_AUDIO_OFF, meta.audio_offset);
+    wr32(block + TB_AUDIO_SIZE, audio_size);
+    block[TB_FORMAT] = meta.format;
+    block[TB_CHANNELS] = meta.channels;
+    block[TB_BITS] = meta.bits_per_sample;
+    copy_name((char *)(void *)(block + LIB_TRACK_TITLE_OFF), MEDIA_TITLE_MAX,
+              meta.title);
+    copy_name((char *)(void *)(block + LIB_TRACK_ARTIST_OFF), MEDIA_NAME_MAX,
+              meta.artist);
+
+    const uint16_t track = lib->track_count;
+    uint32_t off = 0;
+    if (!media_cache_write(block, sizeof(block), &off)) {
+        return -2; /* cache write failure: abort the scan */
+    }
+    lib->track_table[track] = off;
+    copy_name(s_work.title[track], MEDIA_TITLE_MAX, meta.title);
+    s_work.track_album[track] = (uint16_t)al;
+    s_work.track_disc[track] = meta.disc;
+    s_work.track_no[track] = meta.track;
+    s_work.track_path_off[track] = 0u;
+    lib->track_count = (uint16_t)(track + 1u);
+
+    report.meta = &meta;
+    report.album_index = (uint16_t)al;
+    report.album_art = s_work.album_art_state[al] == ART_STATE_UNTRIED
+                           ? (uint8_t)MEDIA_LIB_ART_NONE
+                           : s_work.album_art_state[al];
+    if (cb != NULL) {
+        cb(&report);
+    }
+    return (int16_t)track;
+}
+
+bool media_scan_write_path(media_library_t *lib, uint16_t track_index,
+                           const char *path) {
+    if (lib->source_kind != MEDIA_LIB_SOURCE_SD) {
+        return true;
+    }
+    if (track_index >= lib->track_count || path == NULL) {
+        return false;
+    }
+    size_t len = strlen(path) + 1u;
+    if (len > MEDIA_SD_PATH_MAX) {
+        len = MEDIA_SD_PATH_MAX;
+    }
+    const uint32_t padded = (uint32_t)((len + 3u) & ~(size_t)3u);
+    uint8_t buf[MEDIA_SD_PATH_MAX + 3u];
+    memset(buf, 0, padded);
+    memcpy(buf, path, len - 1u);
+    uint32_t off = 0;
+    if (!media_cache_write(buf, padded, &off)) {
+        return false;
+    }
+    s_work.track_path_off[track_index] = off;
+    return true;
+}
+
+bool media_scan_finish(media_library_t *lib) {
+    media_scan_stats_t *st = &lib->stats;
+    const uint16_t nt = lib->track_count;
+    const uint16_t na = lib->album_count;
+    const uint16_t nr = lib->artist_count;
 
     /* Albums that never met a picture get a seeded placeholder. */
     for (uint16_t a = 0; a < na; a++) {
@@ -771,9 +838,6 @@ static bool full_scan(media_library_t *lib, media_scan_progress_fn cb) {
         s_work.artist_album_count[a]++;
     }
 
-    lib->track_count = nt;
-    lib->album_count = na;
-    lib->artist_count = nr;
     st->tracks = nt;
     st->albums = na;
     st->artists = nr;
@@ -784,6 +848,16 @@ static bool full_scan(media_library_t *lib, media_scan_progress_fn cb) {
         !media_cache_write(lib->track_table, (uint32_t)nt * 4u, &tt_off)) {
         return false;
     }
+
+    /* SD path table: one cache offset of the NUL-terminated path per track. */
+    uint32_t tp_off = 0;
+    if (s_work.source_kind == MEDIA_LIB_SOURCE_SD && nt > 0u) {
+        if (!media_cache_write(s_work.track_path_off, (uint32_t)nt * 4u,
+                               &tp_off)) {
+            return false;
+        }
+    }
+    lib->track_path_off = tp_off;
 
     /* Artist records. */
     uint32_t ar_off = 0;
@@ -870,9 +944,15 @@ static bool full_scan(media_library_t *lib, media_scan_progress_fn cb) {
     wr32(root + ROOT_OFF_ORDER_ALBUM, oal_off);
     wr32(root + ROOT_OFF_TRACK_BLOCK, LIB_TRACK_BLOCK);
     wr32(root + ROOT_OFF_ARTIST_REC_SZ, LIB_ARTIST_REC);
+    /* Version 2: SD path table, source kind and the file counters. */
+    wr32(root + ROOT_OFF_TRACK_PATH, tp_off);
+    root[ROOT_OFF_SOURCE] = s_work.source_kind;
+    wr16(root + ROOT_OFF_FILES, st->files);
+    wr16(root + ROOT_OFF_FILES_IGNORED, st->files_ignored);
+    root[ROOT_OFF_FILE_CAP] = st->file_cap_hit ? 1u : 0u;
     /* The root itself is the last record: its size is part of the final used
      * size, and media_cache_commit() rounds that up to a sector, so the value
-     * can be computed before appending the root (64 bytes, already aligned). */
+     * can be computed before appending the root (80 bytes, already aligned). */
     const uint32_t committed_bytes =
         (media_cache_used() + LIB_ROOT_SIZE + MEDIA_CACHE_SECTOR_SIZE - 1u) &
         ~(MEDIA_CACHE_SECTOR_SIZE - 1u);
@@ -913,6 +993,46 @@ static bool full_scan(media_library_t *lib, media_scan_progress_fn cb) {
     return true;
 }
 
+/** Flash-pack driver: resolve every TOC entry and feed the shared engine. */
+static bool full_scan(media_library_t *lib, media_scan_progress_fn cb) {
+    const uint16_t files = media_pack_count(&lib->pack);
+    if (!media_scan_begin(lib, files, MEDIA_LIB_SOURCE_PACK)) {
+        return false;
+    }
+    media_scan_stats_t *st = &lib->stats;
+
+    for (uint16_t i = 0; i < files; i++) {
+        media_scan_report_t report;
+        memset(&report, 0, sizeof(report));
+        report.index = i;
+        report.count = files;
+        report.name = media_pack_name(&lib->pack, i);
+        report.album_index = 0xFFFFu;
+        report.meta_status = (int8_t)MEDIA_ERR_IO;
+
+        media_pack_file_t file;
+        if (!media_pack_file_at(&lib->pack, i, &file)) {
+            st->skipped++;
+            if (cb != NULL) {
+                cb(&report);
+            }
+            continue;
+        }
+        media_source_t src;
+        if (!media_pack_source_ex(&lib->pack, i, &file, &src)) {
+            st->skipped++;
+            if (cb != NULL) {
+                cb(&report);
+            }
+            continue;
+        }
+        if (media_scan_one(lib, cb, i, files, report.name, &src) == -2) {
+            return false; /* cache write failure */
+        }
+    }
+    return media_scan_finish(lib);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Public API                                                               */
 /* ------------------------------------------------------------------------- */
@@ -932,7 +1052,8 @@ bool media_library_scan(media_library_t *lib, media_scan_progress_fn cb) {
     lib->key = media_pack_cache_key(&lib->pack);
     lib->stats.files = media_pack_count(&lib->pack);
 
-    if (media_cache_valid(lib->key) && load_index(lib)) {
+    if (media_cache_valid(lib->key) && load_index(lib) &&
+        lib->source_kind == MEDIA_LIB_SOURCE_PACK) {
         lib->ready = lib->track_count > 0u;
         lib->stats.valid = lib->ready;
         lib->stats.cache_hit = true;
@@ -955,6 +1076,12 @@ const media_scan_stats_t *media_library_stats(const media_library_t *lib) {
 
 bool media_library_ready(const media_library_t *lib) {
     return lib != NULL && lib->ready;
+}
+
+void media_library_release(media_library_t *lib) {
+    if (lib != NULL && lib->sd_close != NULL) {
+        lib->sd_close(lib);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1263,6 +1390,17 @@ bool media_library_track(media_library_t *lib, uint32_t track_id,
     out->format = rec[TB_FORMAT];
     out->audio_offset = rd32(rec + TB_AUDIO_OFF);
     out->audio_size = rd32(rec + TB_AUDIO_SIZE);
+
+    if (lib->source_kind == MEDIA_LIB_SOURCE_SD) {
+        /* SD: open the file by the path stored in the cache. The source stays
+         * valid until the next media_library_track() call. */
+        if (lib->sd_open == NULL ||
+            !lib->sd_open(lib, track, out->audio_offset, out->audio_size,
+                          &out->source)) {
+            return false;
+        }
+        return true;
+    }
 
     media_pack_file_t file;
     const uint16_t file_index = rd16(rec + TB_FILE);

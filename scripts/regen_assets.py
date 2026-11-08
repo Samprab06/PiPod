@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Regenerate every generated asset in the repo.
 
-    python -I scripts/regen_assets.py            # fonts + demo art + preview
-    python -I scripts/regen_assets.py --fonts    # fonts only
-    python -I scripts/regen_assets.py --art      # demo art only
-    python -I scripts/regen_assets.py --preview  # font preview sheet only
+    python -I scripts/regen_assets.py               # fonts + demo art + preview + UI assets
+    python -I scripts/regen_assets.py --fonts       # the original fonts only
+    python -I scripts/regen_assets.py --fonts-480   # the 480x320 font faces only
+    python -I scripts/regen_assets.py --assets      # the precomputed UI asset sets
+    python -I scripts/regen_assets.py --art         # demo art only
+    python -I scripts/regen_assets.py --preview     # font preview sheet only
 
 Steps:
   1. lib/gfx/fonts/font_inter_*.c   (scripts/gen_font.py, --verify on)
@@ -13,6 +15,7 @@ Steps:
   4. assets/demo_art/art_*.png      (scripts/gen_demo_art.py)
   5. lib/ui_demo_assets/art_*.c     + demo_art.h / demo_art.c
   6. build/font_preview.png         (scripts/gen_font_preview.py)
+  7. lib/ui/assets/ui_assets*.c/.h  (scripts/gen_ui_assets.py, 320 + 480 layouts)
 """
 
 from __future__ import annotations
@@ -30,9 +33,23 @@ sys.path.insert(0, HERE)
 import gen_font  # noqa: E402
 import gen_font_preview  # noqa: E402
 import gen_demo_art  # noqa: E402
+import gen_ui_assets  # noqa: E402
 from font_specs import FONT_SPECS, FONT_TTF  # noqa: E402
 
+#: Extra faces used only by the 480x320 (ST7796) layout. The existing five
+#: faces above are shared/untouched; font_inter_28b is reused as the large
+#: Now Playing title, so only three new sizes are needed.
+FONT_SPECS_480 = [
+    {"name": "font_inter_16", "size": 16, "weight": 400,
+     "note": "480x320 body small / captions"},
+    {"name": "font_inter_18", "size": 18, "weight": 400,
+     "note": "480x320 body / status title"},
+    {"name": "font_inter_22sb", "size": 22, "weight": 600,
+     "note": "480x320 list item"},
+]
+
 FONT_OUT_DIR = os.path.join(ROOT, "lib", "gfx", "fonts")
+ASSET_OUT_DIR = os.path.join(ROOT, "lib", "ui", "assets")
 ART_OUT_DIR = os.path.join(ROOT, "lib", "ui_demo_assets")
 ART_PNG_DIR = os.path.join(ROOT, "assets", "demo_art")
 
@@ -56,7 +73,7 @@ def write_fonts_header(path: str) -> None:
         '#include "gfx_font.h"',
         "",
     ]
-    for spec in FONT_SPECS:
+    for spec in FONT_SPECS + FONT_SPECS_480:
         lines.append(
             f"extern const gfx_font_t {spec['name']}; "
             f"/* {spec['size']} px, weight {spec['weight']} - {spec['note']} */"
@@ -80,7 +97,7 @@ def write_fonts_cmake(path: str) -> None:
         "",
         "target_sources(gfx PRIVATE",
     ]
-    for spec in FONT_SPECS:
+    for spec in FONT_SPECS + FONT_SPECS_480:
         lines.append(f"    ${{CMAKE_CURRENT_LIST_DIR}}/{spec['name']}.c")
     lines += [
         ")",
@@ -92,13 +109,15 @@ def write_fonts_cmake(path: str) -> None:
         fh.write("\n".join(lines))
 
 
-def generate_fonts(verify: bool = True) -> int:
+def generate_fonts(verify: bool = True, specs=None) -> int:
+    if specs is None:
+        specs = FONT_SPECS
     ttf = os.path.join(ROOT, FONT_TTF)
     if not os.path.isfile(ttf):
         raise SystemExit(f"missing source font: {ttf}")
     os.makedirs(FONT_OUT_DIR, exist_ok=True)
     total = 0
-    for spec in FONT_SPECS:
+    for spec in specs:
         data = gen_font.build_font(
             ttf,
             spec["size"],
@@ -119,8 +138,17 @@ def generate_fonts(verify: bool = True) -> int:
         )
     write_fonts_header(os.path.join(FONT_OUT_DIR, "fonts.h"))
     write_fonts_cmake(os.path.join(FONT_OUT_DIR, "fonts.cmake"))
-    print(f"fonts: {len(FONT_SPECS)} faces, {total} B of tables total")
+    if specs is FONT_SPECS:
+        print(f"fonts: {len(FONT_SPECS)} faces, {total} B of tables total")
+    else:
+        print(f"fonts: {len(specs)} additional 480x320 faces, {total} B of tables total")
     return 0
+
+
+def generate_ui_assets() -> int:
+    rc = gen_ui_assets.generate(ASSET_OUT_DIR, 320)
+    rc |= gen_ui_assets.generate(ASSET_OUT_DIR, 480)
+    return rc
 
 
 def generate_art() -> int:
@@ -133,15 +161,23 @@ def generate_preview() -> int:
 
 def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description="Regenerate all generated assets.")
-    ap.add_argument("--fonts", action="store_true", help="only regenerate fonts")
+    ap.add_argument("--fonts", action="store_true", help="only regenerate the original fonts")
+    ap.add_argument("--fonts-480", action="store_true",
+                    help="only regenerate the 480x320 font faces")
+    ap.add_argument("--assets", action="store_true",
+                    help="only regenerate the precomputed UI asset sets")
     ap.add_argument("--art", action="store_true", help="only regenerate demo art")
     ap.add_argument("--preview", action="store_true", help="only regenerate the preview sheet")
     ap.add_argument("--no-verify", action="store_true", help="skip the 4bpp decode self-check")
     args = ap.parse_args(argv)
 
-    everything = not (args.fonts or args.art or args.preview)
+    everything = not (args.fonts or args.fonts_480 or args.assets or args.art or args.preview)
     if everything or args.fonts:
         generate_fonts(verify=not args.no_verify)
+    if everything or args.fonts_480:
+        generate_fonts(verify=not args.no_verify, specs=FONT_SPECS_480)
+    if everything or args.assets:
+        generate_ui_assets()
     if everything or args.art:
         generate_art()
     if everything or args.preview:

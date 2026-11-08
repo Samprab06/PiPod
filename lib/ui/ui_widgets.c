@@ -15,7 +15,7 @@
 
 #include "fonts.h"
 #include "gfx_render.h"
-#include "ui_assets.h"
+#include "ui_assets_sel.h"
 
 /* ------------------------------------------------------------------------- */
 /* Geometry and text                                                         */
@@ -178,22 +178,25 @@ void ui_invalidate_status(void) {
 }
 
 gfx_rect_t ui_rect_play_glyph(void) {
-    gfx_rect_t r = {4, 3, 16, 16};
+    gfx_rect_t r = {UI_RECT_PLAY_GLYPH_X, UI_RECT_PLAY_GLYPH_Y, UI_RECT_PLAY_GLYPH_W,
+                    UI_RECT_PLAY_GLYPH_H};
     return r;
 }
 
 gfx_rect_t ui_rect_mode_icons(void) {
-    gfx_rect_t r = {254, 3, 34, 16};
+    gfx_rect_t r = {UI_RECT_MODE_ICONS_X, UI_RECT_MODE_ICONS_Y, UI_RECT_MODE_ICONS_W,
+                    UI_RECT_MODE_ICONS_H};
     return r;
 }
 
 gfx_rect_t ui_rect_battery(void) {
-    gfx_rect_t r = {286, 3, 30, 16};
+    gfx_rect_t r = {UI_RECT_BATTERY_X, UI_RECT_BATTERY_Y, UI_RECT_BATTERY_W,
+                    UI_RECT_BATTERY_H};
     return r;
 }
 
 gfx_rect_t ui_rect_perf(void) {
-    gfx_rect_t r = {20, 2, 78, 18};
+    gfx_rect_t r = {UI_RECT_PERF_X, UI_RECT_PERF_Y, UI_RECT_PERF_W, UI_RECT_PERF_H};
     return r;
 }
 
@@ -202,60 +205,76 @@ gfx_rect_t ui_rect_perf(void) {
 /* ------------------------------------------------------------------------- */
 
 void ui_draw_glyph_play(gfx_canvas_t *c, int x, int y, bool playing, gfx_color_t col) {
-    if (!ui_visible(c, x, y, 10, 12)) {
+    if (!ui_visible(c, x, y, UI_STATUS_PLAY_W, UI_STATUS_PLAY_H)) {
         return;
     }
     if (playing) {
-        gfx_fill_triangle(c, x, y, x, y + 11, x + 9, y + 5, col);
+        gfx_fill_triangle(c, x, y, x, y + UI_STATUS_PLAY_H - 1, x + UI_STATUS_PLAY_W - 1,
+                          y + (UI_STATUS_PLAY_H - 1) / 2, col);
     } else {
-        gfx_fill_rect(c, x, y, 3, 11, col);
-        gfx_fill_rect(c, x + 6, y, 3, 11, col);
+        const int bar_w = (UI_STATUS_PLAY_W * 3) / 10;
+        const int gap_x = (UI_STATUS_PLAY_W * 6) / 10;
+        gfx_fill_rect(c, x, y, bar_w, UI_STATUS_PLAY_H - 1, col);
+        gfx_fill_rect(c, x + gap_x, y, bar_w, UI_STATUS_PLAY_H - 1, col);
     }
 }
 
 void ui_draw_glyph_battery(gfx_canvas_t *c, int x, int y, uint8_t percent, bool charging,
                            gfx_color_t col) {
-    if (!ui_visible(c, x - 1, y - 1, 25, 13)) {
+    if (!ui_visible(c, x - 1, y - 1, UI_STATUS_BATT_W + 5, UI_STATUS_BATT_H + 3)) {
         return;
     }
     if (percent > 100u) {
         percent = 100u;
     }
-    gfx_draw_round_rect(c, x, y, 20, 10, 2, col);
-    const int inner = (int)((18u * (uint32_t)percent) / 100u);
+    gfx_draw_round_rect(c, x, y, UI_STATUS_BATT_W, UI_STATUS_BATT_H, 2, col);
+    const int inner = (int)(((uint32_t)(UI_STATUS_BATT_W - 2) * (uint32_t)percent) / 100u);
     if (inner > 0) {
-        gfx_fill_rect(c, x + 1, y + 1, inner, 8, col);
+        gfx_fill_rect(c, x + 1, y + 1, inner, UI_STATUS_BATT_H - 2, col);
     }
-    gfx_fill_rect(c, x + 20, y + 3, 2, 4, col);
+    gfx_fill_rect(c, x + UI_STATUS_BATT_W, y + (UI_STATUS_BATT_H * 3) / 10,
+                  UI_STATUS_BATT_NUB_W, (UI_STATUS_BATT_H * 4) / 10, col);
     if (charging) {
         /* Bolt in the middle: light on a filled cell, dark on an empty one. */
         const gfx_color_t bolt = (percent >= 50u) ? UI_COL_STATUS_BOT : col;
-        const int bx = x + 7;
+        const int bw = UI_STATUS_BATT_W / 5;
+        const int bx = x + (UI_STATUS_BATT_W * 7) / 20;
         const int by = y + 1;
-        gfx_fill_triangle(c, bx + 3, by, bx, by + 5, bx + 4, by + 4, bolt);
-        gfx_fill_triangle(c, bx + 3, by + 9, bx, by + 5, bx + 4, by + 5, bolt);
+        const int h5 = (UI_STATUS_BATT_H * 5) / 10;
+        const int h4 = (UI_STATUS_BATT_H * 4) / 10;
+        const int h9 = (UI_STATUS_BATT_H * 9) / 10;
+        gfx_fill_triangle(c, bx + bw - 1, by, bx, by + h5, bx + bw, by + h4, bolt);
+        gfx_fill_triangle(c, bx + bw - 1, by + h9, bx, by + h5, bx + bw, by + h5, bolt);
     }
 }
 
 void ui_draw_glyph_shuffle(gfx_canvas_t *c, int x, int y, gfx_color_t col) {
-    if (!ui_visible(c, x, y, 10, 12)) {
+    if (!ui_visible(c, x, y, UI_STATUS_MODE_W, UI_STATUS_MODE_H)) {
         return;
     }
-    gfx_hline(c, x, y + 2, 6, col);
-    gfx_fill_triangle(c, x + 6, y, x + 6, y + 5, x + 9, y + 2, col);
-    gfx_hline(c, x, y + 8, 6, col);
-    gfx_fill_triangle(c, x + 6, y + 6, x + 6, y + 11, x + 9, y + 8, col);
-    for (int i = 0; i < 6; i++) {
-        gfx_fill_rect(c, x + 1 + i, y + 8 - i, 1, 1, col);
+    const int len = (UI_STATUS_MODE_W * 6) / 10;
+    const int y2 = y + (UI_STATUS_MODE_H * 2) / 12;
+    const int y8 = y + (UI_STATUS_MODE_H * 8) / 12;
+    gfx_hline(c, x, y2, len, col);
+    gfx_fill_triangle(c, x + len, y, x + len, y + (UI_STATUS_MODE_H * 5) / 12,
+                      x + (UI_STATUS_MODE_W * 9) / 10, y2, col);
+    gfx_hline(c, x, y8, len, col);
+    gfx_fill_triangle(c, x + len, y + (UI_STATUS_MODE_H * 6) / 12, x + len,
+                      y + (UI_STATUS_MODE_H * 11) / 12, x + (UI_STATUS_MODE_W * 9) / 10, y8, col);
+    for (int i = 0; i < len; i++) {
+        gfx_fill_rect(c, x + 1 + i, y8 - i, 1, 1, col);
     }
 }
 
 void ui_draw_glyph_repeat(gfx_canvas_t *c, int x, int y, gfx_color_t col) {
-    if (!ui_visible(c, x, y, 10, 12)) {
+    if (!ui_visible(c, x, y, UI_STATUS_MODE_W, UI_STATUS_MODE_H)) {
         return;
     }
-    gfx_draw_round_rect(c, x, y + 2, 9, 7, 2, col);
-    gfx_fill_triangle(c, x + 3, y, x + 8, y + 1, x + 3, y + 3, col);
+    gfx_draw_round_rect(c, x, y + (UI_STATUS_MODE_H * 2) / 12, (UI_STATUS_MODE_W * 9) / 10,
+                        (UI_STATUS_MODE_H * 7) / 12, 2, col);
+    gfx_fill_triangle(c, x + (UI_STATUS_MODE_W * 3) / 10, y,
+                      x + (UI_STATUS_MODE_W * 8) / 10, y + 1,
+                      x + (UI_STATUS_MODE_W * 3) / 10, y + 3, col);
 }
 
 static void glyph_fill(gfx_canvas_t *c, int x, int y, int w, int h, gfx_color_t col, uint8_t a) {
@@ -269,29 +288,39 @@ static void glyph_fill(gfx_canvas_t *c, int x, int y, int w, int h, gfx_color_t 
     }
 }
 
+/** Scale a 320-layout speaker coordinate to the active layout. */
+static int spk_px(int v) {
+    return (v * UI_VOL_SPK_NUM) / UI_VOL_SPK_DEN;
+}
+
 void ui_draw_glyph_speaker_alpha(gfx_canvas_t *c, int x, int y, bool high, gfx_color_t col,
                                  uint8_t alpha) {
-    if (alpha == 0u || !ui_visible(c, x, y, high ? 18 : 12, 14)) {
+    const int box_w = (high ? 18 : 12);
+    if (alpha == 0u || !ui_visible(c, x, y, spk_px(box_w), spk_px(14))) {
         return;
     }
-    /* Body plus a stair-stepped cone, all through glyph_fill so the fade works. */
-    glyph_fill(c, x, y + 5, 3, 5, col, alpha);
+    /* Body plus a stair-stepped cone, all through glyph_fill so the fade works.
+     * Geometry is written in 320-layout units and scaled by UI_VOL_SPK_NUM/DEN
+     * so the 480 layout gets a 1.5x glyph without a second code path. */
+    glyph_fill(c, x + spk_px(0), y + spk_px(5), spk_px(3) < 1 ? 1 : spk_px(3),
+               spk_px(5) < 1 ? 1 : spk_px(5), col, alpha);
     for (int i = 0; i < 6; i++) {
         const int hh = 2 + i * 2;
-        glyph_fill(c, x + 2 + i, y + 7 - hh / 2, 1, hh, col, alpha);
+        glyph_fill(c, x + spk_px(2 + i), y + spk_px(7 - hh / 2), spk_px(1) < 1 ? 1 : spk_px(1),
+                   spk_px(hh) < 1 ? 1 : spk_px(hh), col, alpha);
     }
 
     static const int8_t arc1[7][2] = {{3, -3}, {4, -2}, {4, -1}, {4, 0}, {4, 1}, {4, 2}, {3, 3}};
     static const int8_t arc2[11][2] = {{6, -5}, {7, -4}, {7, -3}, {7, -2}, {7, -1}, {7, 0},
                                        {7, 1},  {7, 2},  {7, 3},  {7, 4},  {6, 5}};
-    const int cx = x + 7;
-    const int cy = y + 7;
+    const int cx = x + spk_px(7);
+    const int cy = y + spk_px(7);
     for (size_t i = 0; i < sizeof arc1 / sizeof arc1[0]; i++) {
-        glyph_fill(c, cx + arc1[i][0], cy + arc1[i][1], 1, 1, col, alpha);
+        glyph_fill(c, cx + spk_px(arc1[i][0]), cy + spk_px(arc1[i][1]), 1, 1, col, alpha);
     }
     if (high) {
         for (size_t i = 0; i < sizeof arc2 / sizeof arc2[0]; i++) {
-            glyph_fill(c, cx + arc2[i][0], cy + arc2[i][1], 1, 1, col, alpha);
+            glyph_fill(c, cx + spk_px(arc2[i][0]), cy + spk_px(arc2[i][1]), 1, 1, col, alpha);
         }
     }
 }
@@ -301,12 +330,12 @@ void ui_draw_glyph_speaker(gfx_canvas_t *c, int x, int y, bool high, gfx_color_t
 }
 
 void ui_draw_glyph_chevron(gfx_canvas_t *c, int x, int y, gfx_color_t col) {
-    if (!ui_visible(c, x, y, 8, 12)) {
+    if (!ui_visible(c, x, y, UI_CHEVRON_W, UI_CHEVRON_H)) {
         return;
     }
-    for (int r = 0; r < 12; r++) {
-        const int dx = (r < 6) ? r : 11 - r;
-        gfx_fill_rect(c, x + dx, y + r, 2, 1, col);
+    for (int r = 0; r < UI_CHEVRON_H; r++) {
+        const int dx = (r < UI_CHEVRON_H / 2) ? r : UI_CHEVRON_H - 1 - r;
+        gfx_fill_rect(c, x + dx, y + r, UI_CHEVRON_STROKE, 1, col);
     }
 }
 
@@ -348,10 +377,12 @@ void ui_draw_progress(gfx_canvas_t *c, int x, int y, int w, int h, uint32_t pos_
         }
     }
     if (knob) {
+        const int kr = (h >= 8) ? 7 : 5;
+        const int kw = (h >= 8) ? 8 : 6;
         const int kx = x + (int)fw;
         const int ky = y + h / 2;
-        gfx_fill_triangle(c, kx, ky - 5, kx, ky + 5, kx + 6, ky, UI_COL_TEXT);
-        gfx_fill_triangle(c, kx, ky - 5, kx - 6, ky, kx, ky + 5, UI_COL_TEXT);
+        gfx_fill_triangle(c, kx, ky - kr, kx, ky + kr, kx + kw, ky, UI_COL_TEXT);
+        gfx_fill_triangle(c, kx, ky - kr, kx - kw, ky, kx, ky + kr, UI_COL_TEXT);
     }
 }
 
@@ -364,11 +395,11 @@ void ui_draw_scrollbar(gfx_canvas_t *c, int y, int h, uint32_t first_row, uint32
     if (!ui_visible(c, x - 2, y, UI_SCROLLBAR_W + 2, h)) {
         return;
     }
-    gfx_fill_round_rect(c, x, y, UI_SCROLLBAR_W, h, 2, UI_COL_SCROLL_BG);
+    gfx_fill_round_rect(c, x, y, UI_SCROLLBAR_W, h, UI_SCROLLBAR_W / 2, UI_COL_SCROLL_BG);
 
     int thumb = (int)(((int64_t)h * (int64_t)rows) / (int64_t)total_rows);
-    if (thumb < 16) {
-        thumb = 16;
+    if (thumb < UI_SCROLL_THUMB_MIN) {
+        thumb = UI_SCROLL_THUMB_MIN;
     }
     if (thumb > h) {
         thumb = h;
@@ -378,13 +409,13 @@ void ui_draw_scrollbar(gfx_canvas_t *c, int y, int h, uint32_t first_row, uint32
     if (max_first > 0) {
         ty += (int)(((int64_t)(h - thumb) * (int64_t)first_row) / (int64_t)max_first);
     }
-    gfx_fill_round_rect(c, x, ty, UI_SCROLLBAR_W, thumb, 2, UI_COL_SCROLL_TH);
+    gfx_fill_round_rect(c, x, ty, UI_SCROLLBAR_W, thumb, UI_SCROLLBAR_W / 2, UI_COL_SCROLL_TH);
 }
 
-/** Baseline that centres the font's ascent..descent box inside the 22 px bar. */
+/** Baseline that centres the font's ascent..descent box inside the status bar. */
 static int status_title_baseline(void) {
-    const int asc = (int)font_inter_14.ascent;
-    int desc = (int)font_inter_14.line_height - asc;
+    const int asc = (int)UI_FONT_STATUS->ascent;
+    int desc = (int)UI_FONT_STATUS->line_height - asc;
     if (desc < 0) {
         desc = 0;
     }
@@ -393,7 +424,7 @@ static int status_title_baseline(void) {
     if (top < 0) {
         top = 0;
     }
-    return top + asc; /* 15 px for font_inter_14: box y 1..19, ink y 4..17 */
+    return top + asc; /* 15 px at 320x240, 21 px at 480x320 */
 }
 
 void ui_draw_status_bar(gfx_canvas_t *c, const ui_status_t *st) {
@@ -409,22 +440,25 @@ void ui_draw_status_bar(gfx_canvas_t *c, const ui_status_t *st) {
     gfx_hline(c, 0, UI_STATUS_H - 1, UI_SCREEN_W, UI_COL_STATUS_LINE);
 
     if (st->has_track) {
-        ui_draw_glyph_play(c, 8, 6, st->play == UI_PLAY_PLAYING, UI_COL_TEXT);
+        ui_draw_glyph_play(c, UI_STATUS_PLAY_X, UI_STATUS_PLAY_Y, st->play == UI_PLAY_PLAYING,
+                           UI_COL_TEXT);
     }
     if (st->perf) {
         char tmp[20];
         (void)snprintf(tmp, sizeof tmp, "%u fps %u%%", (unsigned)st->fps, (unsigned)st->cpu);
-        ui_text(c, &font_inter_12, 22, 15, 72, tmp, UI_COL_TEXT_2);
+        ui_text(c, UI_FONT_SMALL, UI_STATUS_PERF_X, UI_STATUS_PERF_BASE, UI_STATUS_PERF_MAX_W, tmp,
+                UI_COL_TEXT_2);
     }
 
-    ui_text_center(c, &font_inter_14, UI_SCREEN_W / 2, status_title_baseline(), 150, st->title,
-                   UI_COL_TEXT);
+    ui_text_center(c, UI_FONT_STATUS, UI_SCREEN_W / 2, status_title_baseline(),
+                   UI_STATUS_TITLE_MAX_W, st->title, UI_COL_TEXT);
 
     if (st->shuffle) {
-        ui_draw_glyph_shuffle(c, 258, 6, UI_COL_TEXT);
+        ui_draw_glyph_shuffle(c, UI_STATUS_SHUFFLE_X, UI_STATUS_MODE_Y, UI_COL_TEXT);
     }
     if (st->repeat) {
-        ui_draw_glyph_repeat(c, 272, 6, UI_COL_TEXT);
+        ui_draw_glyph_repeat(c, UI_STATUS_REPEAT_X, UI_STATUS_MODE_Y, UI_COL_TEXT);
     }
-    ui_draw_glyph_battery(c, 290, 6, st->battery, st->charging, UI_COL_TEXT);
+    ui_draw_glyph_battery(c, UI_STATUS_BATT_X, UI_STATUS_BATT_Y, st->battery, st->charging,
+                          UI_COL_TEXT);
 }

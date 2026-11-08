@@ -8,6 +8,7 @@ add_library(input STATIC
     input_buttons.c
     input_wheel.c
     input_uart.c
+    input_touchpads.c
 )
 
 target_include_directories(input PUBLIC ${CMAKE_CURRENT_LIST_DIR})
@@ -34,3 +35,9 @@ target_link_libraries(input PUBLIC
 #   gcc -std=c11 -Wall -Wextra -O2 -I lib/input -I lib/ui -I lib/gfx \
 #       lib/input/test/wheel_host_test.c lib/input/input_wheel.c -lm \
 #       -o build/wheel_host_test
+#
+# Host-side unit test for the TTP223 decoder (simulated levels + clock):
+#   gcc -std=c11 -Wall -Wextra -O2 -DINPUT_TOUCHPADS_HOST \
+#       -I lib/input -I lib/ui -I lib/gfx \
+#       lib/input/test/touchpads_host_test.c lib/input/input_touchpads.c \
+#       -o build/touchpads_host_test

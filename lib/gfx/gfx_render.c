@@ -2,12 +2,13 @@
  * Dirty-rectangle manager and strip renderer.
  *
  * The renderer owns two strip buffers. Each band is rendered into the current
- * buffer and then handed to the display driver with ili9341_blit_async(), which
+ * buffer and then handed to the display driver with display_blit_async(), which
  * waits for the previous transfer and starts DMA. The renderer then flips to
  * the other buffer, so the next band is drawn while the previous one is still
- * on the wire.
+ * on the wire. The buffer width is GFX_SCREEN_W (see gfx_config.h), so the
+ * same code serves the 320-wide ILI9341 and the 480-wide ST7796.
  *
- * Because ili9341_blit_async() waits for the transfer that preceded it, a
+ * Because display_blit_async() waits for the transfer that preceded it, a
  * buffer is only reused after the transfer that used it has completed: by the
  * time the renderer comes back to buffer N (two blits later) the blit of N was
  * completed by the blit of N + 1. The parity is kept across gfx_render() calls
@@ -16,7 +17,7 @@
  *
  * Direct layers: a scene can declare opaque images at fixed screen rectangles
  * (gfx_direct_add()). A dirty rect that is exactly covered by one of them (same
- * x and width, inside its rows) is sent by ili9341_blit_flash_async() straight
+ * x and width, inside its rows) is sent by display_blit_flash_async() straight
  * from flash: the XIP stream unit feeds a RAM ring that the SPI DMA drains, so
  * the CPU never touches those pixels. Everything else is drawn into strips.
  * The two paths share the SPI and are sequenced by the driver (direct blits
@@ -28,7 +29,7 @@
 
 #include <string.h>
 
-#include "ili9341.h"
+#include "display.h"
 
 #ifdef PICO_ON_DEVICE
 #include "pico/time.h"
@@ -37,9 +38,7 @@
 #endif
 
 /* The strip buffers are sized for the widest landscape window. */
-#define GFX_STRIP_MAX_W 320
-
-#define GFX_STRIP_PIXELS ((size_t)GFX_STRIP_MAX_W * (size_t)GFX_STRIP_H)
+#define GFX_STRIP_PIXELS ((size_t)GFX_SCREEN_W * (size_t)GFX_STRIP_H)
 
 typedef struct {
     gfx_rect_t rect;       /**< Screen rectangle the pixels occupy. */
@@ -74,11 +73,11 @@ static uint32_t now_us(void) {
 /* ------------------------------------------------------------------------- */
 
 static gfx_rect_t screen_rect(void) {
-    int w = (int)ili9341_width();
-    int h = (int)ili9341_height();
+    int w = (int)display_width();
+    int h = (int)display_height();
     gfx_rect_t r;
-    if (w > GFX_STRIP_MAX_W) {
-        w = GFX_STRIP_MAX_W;
+    if (w > GFX_SCREEN_W) {
+        w = GFX_SCREEN_W;
     }
     if (w < 0) {
         w = 0;
@@ -264,7 +263,7 @@ void gfx_render(gfx_draw_fn draw, void *user) {
 
     for (uint32_t i = 0; i < rect_count; i++) {
         gfx_rect_t r = s_dirty[i];
-        if (r.w > GFX_STRIP_MAX_W) {
+        if (r.w > GFX_SCREEN_W) {
             continue;
         }
 
@@ -275,7 +274,7 @@ void gfx_render(gfx_draw_fn draw, void *user) {
         if (layer != NULL) {
             const uint16_t *src =
                 layer->pixels + (size_t)(r.y - layer->rect.y) * (size_t)layer->stride;
-            if (ili9341_blit_flash_async((uint16_t)r.x, (uint16_t)r.y, (uint16_t)r.w,
+            if (display_blit_flash_async((uint16_t)r.x, (uint16_t)r.y, (uint16_t)r.w,
                                          (uint16_t)r.h, src)) {
                 const uint32_t area = rect_area(r);
                 direct_pixels += area;
@@ -307,7 +306,7 @@ void gfx_render(gfx_draw_fn draw, void *user) {
 
             /* blit_async() waits for the previous transfer (the other buffer)
              * before starting this one, so s_buf[s_buf_index ^ 1] is free. */
-            ili9341_blit_async((uint16_t)r.x, (uint16_t)band_y, (uint16_t)r.w,
+            display_blit_async((uint16_t)r.x, (uint16_t)band_y, (uint16_t)r.w,
                                (uint16_t)band_h, c.buf);
             s_buf_index ^= 1u;
 

@@ -68,7 +68,8 @@ COL_SEL_BOT = rgb(32, 98, 196)
 COL_SEL_TEXT = rgb(255, 255, 255)
 COL_CHEVRON = rgb(150, 150, 158)
 
-# lib/ui/ui_internal.h / lib/ui/ui_widgets.c geometry
+# lib/ui/ui_layout.h geometry, selected by --layout. Keep both sets in sync
+# with lib/ui/ui_layout.h (320x240 ILI9341 and 480x320 ST7796).
 SCREEN_W = 320
 STATUS_H = 22
 TITLE_X = 85          # ui_rect_title()
@@ -82,6 +83,52 @@ ROW_TEXT_X = 12
 ROW_TEXT_BASELINE = 20
 ROW_CHEVRON_X = 300
 ROW_CHEVRON_Y = 8
+ROW_CHEVRON_H = 12
+ROW_CHEVRON_STROKE = 2
+
+FONT_TITLE = ("font_inter_14", 14, 400)
+FONT_ROW = ("font_inter_16sb", 16, 600)
+
+ASSET_BASENAME = "ui_assets"
+ASSET_GUARD = "UI_ASSETS_H"
+LAYOUT_TAG = "320x240"
+
+
+def set_layout(layout: int) -> None:
+    """Select the mirrored geometry for one panel size (320 or 480)."""
+    global SCREEN_W, STATUS_H, TITLE_X, TITLE_Y, TITLE_W, TITLE_H, TITLE_BASELINE
+    global ROW_W, ROW_H, ROW_TEXT_X, ROW_TEXT_BASELINE
+    global ROW_CHEVRON_X, ROW_CHEVRON_Y, ROW_CHEVRON_H, ROW_CHEVRON_STROKE
+    global ROW_TEXT_RIGHT, ROW_TEXT_RIGHT_CHEVRON
+    global FONT_TITLE, FONT_ROW, ASSET_BASENAME, ASSET_GUARD, LAYOUT_TAG
+    if layout == 320:
+        SCREEN_W, STATUS_H = 320, 22
+        TITLE_X, TITLE_Y, TITLE_W, TITLE_H, TITLE_BASELINE = 85, 2, 150, 18, 15
+        ROW_W, ROW_H = 320, 27
+        ROW_TEXT_X, ROW_TEXT_BASELINE = 12, 20
+        ROW_CHEVRON_X, ROW_CHEVRON_Y = 300, 8
+        ROW_CHEVRON_H, ROW_CHEVRON_STROKE = 12, 2
+        ROW_TEXT_RIGHT, ROW_TEXT_RIGHT_CHEVRON = 306, 292
+        FONT_TITLE = ("font_inter_14", 14, 400)
+        FONT_ROW = ("font_inter_16sb", 16, 600)
+        ASSET_BASENAME = "ui_assets"
+        ASSET_GUARD = "UI_ASSETS_H"
+        LAYOUT_TAG = "320x240"
+    elif layout == 480:
+        SCREEN_W, STATUS_H = 480, 30
+        TITLE_X, TITLE_Y, TITLE_W, TITLE_H, TITLE_BASELINE = 120, 2, 240, 26, 21
+        ROW_W, ROW_H = 480, 36
+        ROW_TEXT_X, ROW_TEXT_BASELINE = 18, 25
+        ROW_CHEVRON_X, ROW_CHEVRON_Y = 452, 12
+        ROW_CHEVRON_H, ROW_CHEVRON_STROKE = 16, 3
+        ROW_TEXT_RIGHT, ROW_TEXT_RIGHT_CHEVRON = 462, 438
+        FONT_TITLE = ("font_inter_18", 18, 400)
+        FONT_ROW = ("font_inter_22sb", 22, 600)
+        ASSET_BASENAME = "ui_assets_480"
+        ASSET_GUARD = "UI_ASSETS_480_H"
+        LAYOUT_TAG = "480x320"
+    else:
+        raise SystemExit(f"unsupported layout: {layout} (use 320 or 480)")
 
 # Titles shown in the status bar (ui_screen_title()).
 STATIC_TITLES = [
@@ -111,9 +158,6 @@ STATIC_ROWS: List[Tuple[str, bool]] = [
     ("Songs", True),
     ("About", True),
 ]
-
-FONT_TITLE = ("font_inter_14", 14, 400)
-FONT_ROW = ("font_inter_16sb", 16, 600)
 
 
 # --------------------------------------------------------------------------- #
@@ -231,11 +275,12 @@ class Frame:
         return sum(font.glyphs[ord(c) - font.first].x_advance for c in s
                    if font.first <= ord(c) <= font.last)
 
-    def draw_chevron(self, x: int, y: int, color: int) -> None:
-        """ui_draw_glyph_chevron(): 12 rows, 2 px wide, mirrored after row 6."""
-        for r in range(12):
-            dx = r if r < 6 else 11 - r
-            self.fill_rect(x + dx, y + r, 2, 1, color)
+    def draw_chevron(self, x: int, y: int, color: int, height: int = 12,
+                     stroke: int = 2) -> None:
+        """ui_draw_glyph_chevron(): height rows, stroke px wide, mirrored."""
+        for r in range(height):
+            dx = r if r < height // 2 else height - 1 - r
+            self.fill_rect(x + dx, y + r, stroke, 1, color)
 
 
 # --------------------------------------------------------------------------- #
@@ -268,7 +313,7 @@ def build_title_asset(font: "gen_font.FontData", title: str) -> Frame:
 
 def build_row_asset(font: "gen_font.FontData", title: str, chevron: bool,
                     selected: bool) -> Frame:
-    """One 320x27 menu row exactly as ui_menu_draw() paints it."""
+    """One full-width menu row exactly as ui_menu_draw() paints it."""
     fb = Frame(ROW_W, ROW_H)
     if selected:
         fb.fill_gradient_v(0, 0, ROW_W, ROW_H, COL_SEL_TOP, COL_SEL_BOT)
@@ -278,12 +323,13 @@ def build_row_asset(font: "gen_font.FontData", title: str, chevron: bool,
     title_col = COL_SEL_TEXT if selected else COL_TEXT
     chev_col = COL_SEL_TEXT if selected else COL_CHEVRON
 
-    # ui_menu_draw(): text_right is 292 with a chevron, 306 without.
-    text_right = 292 if chevron else 306
+    # ui_menu_draw(): text_right is 292 with a chevron, 306 without (320 layout).
+    text_right = ROW_TEXT_RIGHT_CHEVRON if chevron else ROW_TEXT_RIGHT
     _ = text_right  # max_w only matters for truncation; all titles fit
     fb.draw_text(font, ROW_TEXT_X, ROW_TEXT_BASELINE, title, title_col)
     if chevron:
-        fb.draw_chevron(ROW_CHEVRON_X, ROW_CHEVRON_Y, chev_col)
+        fb.draw_chevron(ROW_CHEVRON_X, ROW_CHEVRON_Y, chev_col, ROW_CHEVRON_H,
+                        ROW_CHEVRON_STROKE)
     return fb
 
 
@@ -316,7 +362,8 @@ def slug(name: str) -> str:
     return "".join(out)
 
 
-def generate(out_dir: str) -> int:
+def generate(out_dir: str, layout: int = 320) -> int:
+    set_layout(layout)
     ttf = os.path.join(ROOT, FONT_TTF)
     if not os.path.isfile(ttf):
         raise SystemExit(f"missing source font: {ttf}")
@@ -339,8 +386,8 @@ def generate(out_dir: str) -> int:
         rows.append((title, chevron, base + "_normal", base + "_selected", normal, selected))
 
     os.makedirs(out_dir, exist_ok=True)
-    c_path = os.path.join(out_dir, "ui_assets.c")
-    h_path = os.path.join(out_dir, "ui_assets.h")
+    c_path = os.path.join(out_dir, ASSET_BASENAME + ".c")
+    h_path = os.path.join(out_dir, ASSET_BASENAME + ".h")
 
     flash_bytes = sum(f.w * f.h * 2 for _, _, f in titles)
     flash_bytes += sum(f.w * f.h * 2 for _, _, _, _, n, s in rows for f in (n, s))
@@ -356,8 +403,8 @@ def generate(out_dir: str) -> int:
     h.append(f" * {BANNER}")
     h.append(" */")
     h.append("")
-    h.append("#ifndef UI_ASSETS_H")
-    h.append("#define UI_ASSETS_H")
+    h.append("#ifndef " + ASSET_GUARD)
+    h.append("#define " + ASSET_GUARD)
     h.append("")
     h.append("#include <stdbool.h>")
     h.append("")
@@ -387,7 +434,7 @@ def generate(out_dir: str) -> int:
     h.append(" * \\brief Precomputed status bar title box for a screen title.")
     h.append(" *")
     h.append(" * \\param title ui_screen_title() result.")
-    h.append(" * \\return 150x18 image to place at (UI_ASSET_TITLE_X, UI_ASSET_TITLE_Y),")
+    h.append(f" * \\return {TITLE_W}x{TITLE_H} image to place at (UI_ASSET_TITLE_X, UI_ASSET_TITLE_Y),")
     h.append(" *         or NULL when the title has no asset (the caller must draw it).")
     h.append(" */")
     h.append("const gfx_image_t *ui_asset_status_title(const char *title);")
@@ -398,7 +445,7 @@ def generate(out_dir: str) -> int:
     h.append(" * \\param title Row label.")
     h.append(" * \\param chevron True when the row draws a chevron.")
     h.append(" * \\param selected True for the highlighted variant.")
-    h.append(" * \\return 320x27 image, or NULL when the row is not precomputed (dynamic")
+    h.append(f" * \\return {ROW_W}x{ROW_H} image, or NULL when the row is not precomputed (dynamic")
     h.append(" *         subtitle, library list row, ...).")
     h.append(" */")
     h.append("const gfx_image_t *ui_asset_menu_row(const char *title, bool chevron, bool selected);")
@@ -407,7 +454,7 @@ def generate(out_dir: str) -> int:
     h.append("}")
     h.append("#endif")
     h.append("")
-    h.append("#endif /* UI_ASSETS_H */")
+    h.append("#endif /* " + ASSET_GUARD + " */")
     h.append("")
 
     with open(h_path, "w", encoding="utf-8", newline="\n") as fh:
@@ -427,7 +474,7 @@ def generate(out_dir: str) -> int:
     c.append("#include <stddef.h>")
     c.append("#include <string.h>")
     c.append("")
-    c.append('#include "ui_assets.h"')
+    c.append(f'#include "{ASSET_BASENAME}.h"')
     c.append("")
 
     for _title, name, frame in titles:
@@ -499,20 +546,22 @@ def generate(out_dir: str) -> int:
     with open(c_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(c))
 
-    print(f"ui_assets: {len(titles)} titles ({TITLE_W}x{TITLE_H}), {len(rows)} rows "
-          f"({ROW_W}x{ROW_H}, normal + selected)")
-    print(f"ui_assets: {flash_bytes} B of pixel data ({flash_bytes / 1024.0:.1f} KB), "
+    print(f"{ASSET_BASENAME}: {len(titles)} titles ({TITLE_W}x{TITLE_H}), {len(rows)} rows "
+          f"({ROW_W}x{ROW_H}, normal + selected) for {LAYOUT_TAG}")
+    print(f"{ASSET_BASENAME}: {flash_bytes} B of pixel data ({flash_bytes / 1024.0:.1f} KB), "
           f"{8 * (len(titles) + 2 * len(rows))} B of descriptors")
-    print(f"ui_assets: {c_path}")
-    print(f"ui_assets: {h_path}")
+    print(f"{ASSET_BASENAME}: {c_path}")
+    print(f"{ASSET_BASENAME}: {h_path}")
     return 0
 
 
 def main(argv: "List[str] | None" = None) -> int:
-    ap = argparse.ArgumentParser(description="Generate lib/ui/assets/ui_assets.c/.h")
+    ap = argparse.ArgumentParser(description="Generate lib/ui/assets/ui_assets*.c/.h")
     ap.add_argument("--out-dir", default=os.path.join(ROOT, "lib", "ui", "assets"))
+    ap.add_argument("--layout", type=int, default=320, choices=(320, 480),
+                    help="panel layout to generate: 320 (ILI9341) or 480 (ST7796)")
     args = ap.parse_args(argv)
-    return generate(args.out_dir)
+    return generate(args.out_dir, args.layout)
 
 
 if __name__ == "__main__":

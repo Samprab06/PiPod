@@ -9,8 +9,9 @@
  * for each strip the renderer needs.
  *
  * Coordinates are screen coordinates: x grows right, y grows down, the origin
- * is the top-left of the panel. The renderer (gfx_render.h) asks for 320 x 16
- * strips, but anything from a single pixel up to the whole panel works.
+ * is the top-left of the panel. The renderer (gfx_render.h) asks for
+ * GFX_SCREEN_W x 16 strips (see gfx_config.h), but anything from a single pixel
+ * up to the whole panel works.
  *
  * Threading: all functions are unsynchronised. A single owner (the UI core)
  * calls them; nothing allocates, and there is no hidden state beyond the

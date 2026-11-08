@@ -20,7 +20,7 @@
 
 #include "fonts.h"
 #include "ui_anim.h"
-#include "ui_assets.h"
+#include "ui_assets_sel.h"
 #include "ui_widgets.h"
 
 /* ------------------------------------------------------------------------- */
@@ -576,21 +576,24 @@ void ui_menu_draw(gfx_canvas_t *c, const ui_np_t *np, const ui_screen_t *s, int 
         const bool sel = ((uint32_t)i == s->selected);
         const gfx_color_t title_col = sel ? UI_COL_SEL_TEXT : UI_COL_TEXT;
 
-        int text_right = (row.flags & UI_ROW_CHEVRON) ? 292 : 306;
+        int text_right =
+            (row.flags & UI_ROW_CHEVRON) ? UI_ROW_TEXT_RIGHT_CHEVRON : UI_ROW_TEXT_RIGHT;
 
         if (row.subtitle != NULL) {
             char sub_buf[UI_TITLE_MAX];
             ui_ascii(row.subtitle, sub_buf, sizeof sub_buf);
-            const int sub_w = gfx_text_width(&font_inter_12, sub_buf);
-            ui_text_right(c, &font_inter_12, text_right + x_off, y + 19, 120, sub_buf,
-                          sel ? UI_COL_SEL_TEXT_2 : UI_COL_TEXT_2);
-            text_right -= sub_w + 8;
+            const int sub_w = gfx_text_width(UI_FONT_SMALL, sub_buf);
+            ui_text_right(c, UI_FONT_SMALL, text_right + x_off, y + UI_ROW_SUB_BASE,
+                          UI_ROW_SUB_MAX_W, sub_buf, sel ? UI_COL_SEL_TEXT_2 : UI_COL_TEXT_2);
+            text_right -= sub_w + UI_ROW_SUB_GAP;
         }
 
-        ui_text(c, &font_inter_16sb, 12 + x_off, y + 20, text_right - 12, row.title, title_col);
+        ui_text(c, UI_FONT_ROW, UI_ROW_TEXT_X + x_off, y + UI_ROW_TITLE_BASE,
+                text_right - UI_ROW_TEXT_X, row.title, title_col);
 
         if ((row.flags & UI_ROW_CHEVRON) != 0u) {
-            ui_draw_glyph_chevron(c, 300 + x_off, y + 8, sel ? UI_COL_SEL_TEXT : UI_COL_CHEVRON);
+            ui_draw_glyph_chevron(c, UI_CHEVRON_X + x_off, y + UI_CHEVRON_Y,
+                                  sel ? UI_COL_SEL_TEXT : UI_COL_CHEVRON);
         }
     }
 

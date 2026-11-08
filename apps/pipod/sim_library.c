@@ -8,7 +8,17 @@
 #include <stdio.h>
 #include <string.h>
 
+/* The ST7796 image leaves the six generated demo covers out to stay under the
+ * 1 MB firmware region (see docs/breadboard_pinout.md). The demo tables still
+ * work; the Now Playing screen draws its built-in placeholder when the art
+ * pointer is NULL. SD-card and flash-pack covers are unaffected. */
+#ifndef PIPOD_DEMO_ART
+#define PIPOD_DEMO_ART 1
+#endif
+
+#if PIPOD_DEMO_ART
 #include "demo_art.h"
+#endif
 
 /* --- static data ------------------------------------------------------- */
 
@@ -310,11 +320,16 @@ static bool sim_get_item(ui_list_kind_t list, uint32_t parent_id, uint32_t index
 
 static const gfx_image_t *sim_get_album_art(uint32_t album_id, void *ctx) {
     (void)ctx;
+#if PIPOD_DEMO_ART
     uint32_t album = 0;
     if (!album_from_id(album_id, &album)) {
         return NULL;
     }
     return demo_art[(album + SIM_FIRST_ALBUM_ID) % DEMO_ART_COUNT];
+#else
+    (void)album_id;
+    return NULL;
+#endif
 }
 
 static const ui_library_t k_sim_library = {

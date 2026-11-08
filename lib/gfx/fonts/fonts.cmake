@@ -10,6 +10,9 @@ target_sources(gfx PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/font_inter_16sb.c
     ${CMAKE_CURRENT_LIST_DIR}/font_inter_20b.c
     ${CMAKE_CURRENT_LIST_DIR}/font_inter_28b.c
+    ${CMAKE_CURRENT_LIST_DIR}/font_inter_16.c
+    ${CMAKE_CURRENT_LIST_DIR}/font_inter_18.c
+    ${CMAKE_CURRENT_LIST_DIR}/font_inter_22sb.c
 )
 
 target_include_directories(gfx PUBLIC ${CMAKE_CURRENT_LIST_DIR})

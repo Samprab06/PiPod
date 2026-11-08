@@ -9,4 +9,7 @@ target_include_directories(media PUBLIC
     ${CMAKE_CURRENT_LIST_DIR}/../ui
 )
 target_link_libraries(media PUBLIC tjpgd gfx pico_stdlib hardware_flash pico_flash)
+if(TARGET storage)
+    target_link_libraries(media PUBLIC storage)
+endif()
 target_compile_options(media PRIVATE -O2)
