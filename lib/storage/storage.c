@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "diskio.h"
 #include "ff.h"
 #include "hw_config.h"
 #include "sd_card.h"
@@ -18,7 +19,12 @@ static FATFS s_fs;
 static bool s_driver_ready;
 static bool s_mounted;
 static int s_last_error;
+static int s_last_fr;
 static storage_info_t s_info;
+
+int storage_last_fr(void) {
+    return s_last_fr;
+}
 
 static void info_reset(void) {
     memset(&s_info, 0, sizeof(s_info));
@@ -47,10 +53,34 @@ bool storage_mount(void) {
     }
     info_reset();
 
-    const FRESULT fr = f_mount(&s_fs, STORAGE_DRIVE, 1);
+    /* Breadboard wiring may not carry the full post-init clock: retry the
+     * mount at lower clocks before giving up. Each retry forces a fresh card
+     * init (400 kHz) so the new clock is applied by the driver. */
+    static const uint32_t k_mount_hz[] = {STORAGE_SD_SPI_HZ, 12500000u, 5000000u, 1000000u};
+    FRESULT fr = FR_NOT_READY;
+    for (size_t i = 0; i < sizeof k_mount_hz / sizeof k_mount_hz[0]; ++i) {
+        if (i > 0 && k_mount_hz[i] >= k_mount_hz[0]) {
+            continue;
+        }
+        sd_card_t *card = sd_get_by_num(0);
+        if (card != NULL) {
+            card->state.m_Status |= STA_NOINIT;
+        }
+        (void)storage_hw_set_spi_hz(k_mount_hz[i]);
+        fr = f_mount(&s_fs, STORAGE_DRIVE, 1);
+        s_last_fr = (int)fr;
+        if (fr == FR_OK) {
+            break;
+        }
+        (void)f_mount(NULL, STORAGE_DRIVE, 0);
+        printf("[sd] mount at %lu Hz failed: %s\n", (unsigned long)k_mount_hz[i],
+               storage_fr_str((int)fr));
+        if (card == NULL || card->state.card_type == SDCARD_NONE) {
+            break; /* no card answered: slower clocks will not help */
+        }
+    }
     if (fr != FR_OK) {
         s_last_error = STORAGE_ERR_MOUNT;
-        (void)f_mount(NULL, STORAGE_DRIVE, 0);
         sd_card_t *card = sd_get_by_num(0);
         if (card == NULL || card->state.card_type == SDCARD_NONE) {
             s_last_error = STORAGE_ERR_NO_CARD;

@@ -19,10 +19,10 @@ supported). Keep the wires short and share a solid ground.
 |---|---|---|
 | VCC | 3V3 | 3.3 V only |
 | GND | GND | common ground, short lead |
-| MISO / DO | GP28 | SPI1 RX, input |
-| CS / SS | GP29 | plain GPIO, active low |
-| SCK / CLK | GP30 | SPI1 SCK |
-| MOSI / DI | GP31 | SPI1 TX |
+| MISO / DO | GP8 | SPI1 RX, input |
+| CS / SS | GP9 | plain GPIO, active low |
+| SCK / CLK | GP10 | SPI1 SCK |
+| MOSI / DI | GP11 | SPI1 TX |
 | CD / card detect | — | not used (`use_card_detect = false`) |
 
 SPI0 is reserved for the display, so the card is on SPI1. The driver

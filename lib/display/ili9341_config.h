@@ -9,6 +9,11 @@
 #define ILI9341_CONFIG_H
 
 #include "hardware/spi.h"
+#ifdef PIPOD_PINS_HEADER
+#include PIPOD_PINS_HEADER
+#else
+#include "../../boards/pipod_breadboard_pins.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,25 +24,33 @@ extern "C" {
 #endif
 
 #ifndef ILI9341_PIN_MISO
-#define ILI9341_PIN_MISO 32
+#ifdef PIPOD_PIN_DISPLAY_MISO
+#define ILI9341_PIN_MISO PIPOD_PIN_DISPLAY_MISO
+#else
+#define ILI9341_PIN_MISO 0xFFu
+#endif
 #endif
 #ifndef ILI9341_PIN_CS
-#define ILI9341_PIN_CS 33
+#define ILI9341_PIN_CS PIPOD_PIN_DISPLAY_CS
 #endif
 #ifndef ILI9341_PIN_SCK
-#define ILI9341_PIN_SCK 34
+#define ILI9341_PIN_SCK PIPOD_PIN_DISPLAY_SCK
 #endif
 #ifndef ILI9341_PIN_MOSI
-#define ILI9341_PIN_MOSI 35
+#define ILI9341_PIN_MOSI PIPOD_PIN_DISPLAY_MOSI
 #endif
 #ifndef ILI9341_PIN_DC
-#define ILI9341_PIN_DC 36
+#define ILI9341_PIN_DC PIPOD_PIN_DISPLAY_DC
 #endif
 #ifndef ILI9341_PIN_RST
-#define ILI9341_PIN_RST 37
+#define ILI9341_PIN_RST PIPOD_PIN_DISPLAY_RST
 #endif
 #ifndef ILI9341_PIN_BL
-#define ILI9341_PIN_BL 38
+#ifdef PIPOD_PIN_DISPLAY_BL
+#define ILI9341_PIN_BL PIPOD_PIN_DISPLAY_BL
+#else
+#define ILI9341_PIN_BL 0xFFu
+#endif
 #endif
 
 /* 75 MHz is clk_peri / 2 at the stock 150 MHz: the fastest rate the PL022 can

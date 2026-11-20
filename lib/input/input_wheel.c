@@ -5,6 +5,7 @@
  */
 
 #include "input_wheel.h"
+#include "input_wheel_math.h"
 
 #include <math.h>
 
@@ -15,27 +16,9 @@
 #endif
 
 #define DEG10_FULL   3600
-#define DEG10_HALF   1800
-#define DEG10_MAX_JUMP 900 /**< > 90 degrees between samples = slip/re-touch */
 #define MAX_PADS     32
 
-typedef struct {
-    uint16_t ticks_per_rev;
-    uint16_t hysteresis_deg10;
-    int32_t  last_deg10;   /**< reference angle, valid while has_ref */
-    int32_t  residue_deg10; /**< sub-tick movement already accumulated */
-    bool     has_ref;
-} input_wheel_state_t;
-
 static input_wheel_state_t s_wheel;
-
-static int32_t wrap_deg10(int32_t deg10) {
-    deg10 %= DEG10_FULL;
-    if (deg10 < 0) {
-        deg10 += DEG10_FULL;
-    }
-    return deg10;
-}
 
 void input_wheel_init(uint16_t ticks_per_rev, uint16_t hysteresis_deg10) {
     s_wheel.ticks_per_rev = (ticks_per_rev == 0u) ? INPUT_WHEEL_DEFAULT_TICKS_PER_REV
@@ -48,75 +31,8 @@ void input_wheel_init(uint16_t ticks_per_rev, uint16_t hysteresis_deg10) {
 }
 
 void input_wheel_feed_angle(int32_t angle_deg10, bool touching) {
-    if (!touching) {
-        /* Finger off: drop the reference so the next touch cannot produce a
-         * tick from the angle the finger happened to leave at. */
-        s_wheel.has_ref = false;
-        s_wheel.residue_deg10 = 0;
-        return;
-    }
-
-    int32_t angle = wrap_deg10(angle_deg10);
-    if (!s_wheel.has_ref) {
-        s_wheel.last_deg10 = angle;
-        s_wheel.residue_deg10 = 0;
-        s_wheel.has_ref = true;
-        return;
-    }
-
-    int32_t delta = angle - s_wheel.last_deg10;
-    if (delta > DEG10_HALF) {
-        delta -= DEG10_FULL;
-    } else if (delta <= -DEG10_HALF) {
-        delta += DEG10_FULL;
-    }
-    s_wheel.last_deg10 = angle;
-
-    if (delta > DEG10_MAX_JUMP || delta < -DEG10_MAX_JUMP) {
-        /* Same touch but a huge step: treat as a slip, re-arm here. */
-        s_wheel.residue_deg10 = 0;
-        return;
-    }
-
-    int32_t step = (int32_t)(DEG10_FULL / s_wheel.ticks_per_rev);
-    if (step < 1) {
-        step = 1;
-    }
-    int32_t hyst = (int32_t)s_wheel.hysteresis_deg10;
-
-    if (s_wheel.residue_deg10 > 0 && delta < 0) {
-        s_wheel.residue_deg10 += delta;
-        /* Small reversal inside the deadband: absorb it. */
-        if (s_wheel.residue_deg10 < hyst) {
-            s_wheel.residue_deg10 = 0;
-        }
-    } else if (s_wheel.residue_deg10 < 0 && delta > 0) {
-        s_wheel.residue_deg10 += delta;
-        if (s_wheel.residue_deg10 > -hyst) {
-            s_wheel.residue_deg10 = 0;
-        }
-    } else {
-        s_wheel.residue_deg10 += delta;
-    }
-
-    int32_t ticks = 0;
-    while (s_wheel.residue_deg10 >= step) {
-        s_wheel.residue_deg10 -= step;
-        ticks++;
-    }
-    while (s_wheel.residue_deg10 <= -step) {
-        s_wheel.residue_deg10 += step;
-        ticks--;
-    }
-
-    if (ticks != 0) {
-        if (ticks > INT16_MAX) {
-            ticks = INT16_MAX;
-        } else if (ticks < INT16_MIN) {
-            ticks = INT16_MIN;
-        }
-        (void)ui_post_wheel((int16_t)ticks);
-    }
+    const int16_t ticks = input_wheel_feed_angle_to_state(&s_wheel, angle_deg10, touching);
+    if (ticks != 0) (void)ui_post_wheel(ticks);
 }
 
 static int32_t angle_from_pads(const uint16_t *pad_strength, uint8_t n_pads, uint16_t threshold) {

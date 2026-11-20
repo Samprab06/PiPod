@@ -29,8 +29,8 @@
 #ifndef PIPOD_PIN_SD_MISO
 #error "PIPOD_PINS_HEADER did not define PIPOD_PIN_SD_MISO"
 #endif
-#ifndef PIPOD_PIN_TOUCH_LEFT
-#error "PIPOD_PINS_HEADER did not define PIPOD_PIN_TOUCH_LEFT"
+#ifndef PIPOD_PIN_MPR121_SDA
+#error "PIPOD_PINS_HEADER did not define PIPOD_PIN_MPR121_SDA"
 #endif
 
 /* TTP223 output polarity; boards/pipod_breadboard_pins.h defines the default. */

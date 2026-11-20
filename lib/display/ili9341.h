@@ -33,16 +33,20 @@ typedef enum {
     ILI9341_PORTRAIT_FLIPPED = 3   /**< 240x320, rotated 180 degrees. */
 } ili9341_rotation_t;
 
+/** Optional MISO/BL sentinel: no readback / backlight tied to supply. */
+#define ILI9341_GPIO_UNUSED 0xFFu
+bool ili9341_has_readback(void);
+
 /** Runtime configuration (pins, SPI instance and clock). */
 typedef struct {
     spi_inst_t *spi; /**< SPI instance, e.g. spi0. */
-    uint pin_miso;   /**< MISO / SDO GPIO (readback only). */
+    uint pin_miso;   /**< MISO / SDO GPIO, or ILI9341_GPIO_UNUSED. */
     uint pin_cs;     /**< Chip select GPIO, driven by SIO. */
     uint pin_sck;    /**< SPI clock GPIO. */
     uint pin_mosi;   /**< SPI MOSI / SDI GPIO. */
     uint pin_dc;     /**< Data/command GPIO (high = data). */
     uint pin_rst;    /**< Hardware reset GPIO (active low). */
-    uint pin_bl;     /**< Backlight PWM GPIO. */
+    uint pin_bl;     /**< Backlight PWM GPIO, or ILI9341_GPIO_UNUSED. */
     uint32_t spi_hz; /**< Requested SPI clock in Hz. */
     bool fast_pins;  /**< 12 mA fast-slew drive on SCK/MOSI/CS/DC (default true). */
 } ili9341_config_t;
@@ -89,6 +93,8 @@ void ili9341_default_config(ili9341_config_t *cfg);
  * the caller can retry or ignore the failure.
  *
  * \param cfg Configuration to use; copied into the driver.
+ * With no MISO, skips readback and returns true after write-only init.
+ * With no BL, skips all PWM configuration and brightness changes.
  * \return The result of ili9341_self_test(): true when the readback looks
  *         healthy, false if cfg is invalid or the self-test fails. A false
  *         result does not mean the panel is dead: many modules leave MISO/SDO

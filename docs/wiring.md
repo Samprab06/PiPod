@@ -1,4 +1,10 @@
-# Wiring: display and controls
+# Historical wiring: display and controls
+
+> **Historical reference only — do not wire the current breadboard from the
+> tables below.** The final-PCB-aligned pin map, ST7796 primary display,
+> MPR121, new SD pins and optional three-pad TTP223 test are documented in
+> [breadboard_pinout.md](breadboard_pinout.md). The current application uses
+> only the on-board GP21/GP26 button map and leaves MPR121 hooks for later.
 
 Physical wiring for the display/UI subsystem on the Purdue Proton. Every GPIO
 below matches `lib/display/ili9341_config.h` (the single source of truth) and
@@ -8,13 +14,8 @@ moves, it moves in those files first.
 Where a statement depends on the exact ILI9341 module you bought, it is marked
 **module-dependent** — check your board before powering up.
 
-> **Breadboard v2:** the PiPod breadboard build adds TTP223 touch pads on
-> GP2-GP7, moves play/pause to a pad and keeps SELECT/MENU on the on-board
-> buttons. For the complete breadboard map (both displays, microSD, TTP223,
-> power and build/test commands) see
-> [breadboard_pinout.md](breadboard_pinout.md). Section 3 below describes the
-> original discrete-button wiring that `input_buttons_default_map()` still
-> uses; the breadboard app no longer uses that map.
+> Section 3 describes the original discrete-button wiring that the legacy
+> input defaults used; the breadboard application does not use that map.
 
 ## 1. Hardware in one paragraph
 

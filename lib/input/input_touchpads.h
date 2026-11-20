@@ -51,6 +51,9 @@
 #ifndef INPUT_TOUCHPADS_H
 #define INPUT_TOUCHPADS_H
 
+/** Any pad GPIO may be unused; it is never initialised or sampled. */
+#define INPUT_TOUCHPADS_GPIO_UNUSED 0xFFu
+
 #include <stdbool.h>
 #include <stdint.h>
 

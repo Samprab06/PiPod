@@ -264,6 +264,9 @@ void input_touchpads_init(const input_touchpads_config_t *cfg) {
     memset(s_pads, 0, sizeof(s_pads));
     for (uint8_t i = 0; i < (uint8_t)INPUT_TOUCHPAD_COUNT; i++) {
         s_pads[i].gpio = pins[i];
+        if (pins[i] == INPUT_TOUCHPADS_GPIO_UNUSED) {
+            continue;
+        }
 
 #ifndef INPUT_TOUCHPADS_HOST
         gpio_init(pins[i]);
@@ -318,6 +321,9 @@ void input_touchpads_poll(void) {
 
     for (uint8_t i = 0; i < (uint8_t)INPUT_TOUCHPAD_COUNT; i++) {
         pad_state_t *p = &s_pads[i];
+        if (p->gpio == INPUT_TOUCHPADS_GPIO_UNUSED) {
+            continue;
+        }
         bool raw = read_raw_high(i);
         bool touched = (raw == s_cfg.active_high);
 

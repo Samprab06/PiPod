@@ -291,6 +291,12 @@ static inline void display_reset_stats(void) {
 
 /** Probe the panel over MISO and report what the readback shows. */
 static inline display_selftest_result_t display_self_test(display_selftest_t *out) {
+    if (!ili9341_has_readback()) {
+        if (out != NULL) {
+            *out = (display_selftest_t){0};
+        }
+        return DISPLAY_SELFTEST_UNSUPPORTED;
+    }
     return ili9341_self_test(out) ? DISPLAY_SELFTEST_OK : DISPLAY_SELFTEST_FAILED;
 }
 

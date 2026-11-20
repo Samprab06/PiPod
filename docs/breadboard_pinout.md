@@ -1,242 +1,237 @@
-# Breadboard pinout and bring-up
+# PiPod breadboard: final-PCB pin map
 
-Wiring for the PiPod breadboard: two display builds (ILI9341 and ST7796S), the
-microSD card, the six TTP223 touch pads, the physical buttons and the two
-stand-alone test apps.
+Purdue Proton, RP2350B, Pico SDK 2.3.1. **All logic is 3.3 V; every module is powered from 3V3 except the microSD module (5 V, see below).**
+Share a common ground and keep SPI leads short. The authoritative map is
+[`boards/pipod_breadboard_pins.h`](../boards/pipod_breadboard_pins.h); its
+compile-time range and collision checks include the reserved DAC signals.
+GP22–25 on-board LEDs are unused.
 
-The authoritative pin map is
-[`boards/pipod_breadboard_pins.h`](../boards/pipod_breadboard_pins.h) (`PIPOD_PIN_*`
-macros). The application reaches it through
-[`apps/pipod/pipod_pins.h`](../apps/pipod/pipod_pins.h); the display drivers get
-the same numbers through their runtime config structs at init and the SD driver
-through `STORAGE_SD_PIN_*` definitions. If a pin moves, it moves in the header
-first. A compile-time `_Static_assert` rejects two signals on the same GPIO.
+## ST7796S 3.5-inch display (primary: `pipod_st7796`)
 
-Board: Purdue Proton, RP2350B (48 GPIOs), `clk_sys` 150 MHz, 16 MB flash.
-Logic is **3.3 V only**. UART0 (GP0 TX / GP1 RX) goes to the on-board debug
-probe at **115200 8N1**.
-
-## 1. Display builds
-
-Both panels share the same SPI0 control pins; only the ILI9341 has a MISO and a
-PWM backlight.
-
-### 1a. ILI9341, 320x240 landscape (`pipod`)
-
-| Module pin | Proton | RP2350 | Notes |
-|---|---|---|---|
-| `VCC` | `3V3` | — | Check the module `J1` jumper; see [wiring.md](wiring.md) §2. |
-| `GND` | `GND` | — | Common ground, tie next to the SPI wires. |
-| `CS` | `GP33` | SIO | Held low for a whole command+data transaction. |
-| `RESET` | `GP37` | SIO | Active low, pulsed by the driver. |
-| `DC` / `RS` | `GP36` | SIO | 0 = command, 1 = data. |
-| `SDI` / `MOSI` | `GP35` | SPI0 TX | 16-bit pixel frames, MSB first. |
-| `SCK` | `GP34` | SPI0 SCK | Mode 0. Default clock 75 MHz. |
-| `LED` | `GP38` | PWM11 A | Backlight PWM, starts at 100 %. |
-| `SDO` / `MISO` | `GP32` | SPI0 RX | Optional; only needed for ID/register readback. |
-| `T_*`, `SD_*` | — | — | Not used; leave unconnected. |
-
-### 1b. ST7796S, 480x320 landscape (`pipod_st7796`)
-
-| Module pin | Proton | RP2350 | Notes |
-|---|---|---|---|
-| `VCC` | `3V3` | — | 3.3 V only. |
-| `GND` | `GND` | — | Common ground. |
-| `CS` | `GP33` | SIO | Same as the ILI9341 build. |
-| `RST` | `GP37` | SIO | Active low. |
-| `DC` | `GP36` | SIO | 0 = command, 1 = data. |
-| `SDA` (`MOSI`) | `GP35` | SPI0 TX | 16-bit pixel frames. |
-| `SCL` (`SCK`) | `GP34` | SPI0 SCK | Mode 0. Default clock 37.5 MHz. |
-| `BL` | `3V3` | — | **Tied to 3.3 V**, always on; backlight control is a no-op. |
-| `SDA-0` | — | — | Not connected on this module. |
-
-The ST7796 module has **no MISO/SDO**, so there is no register or pixel
-readback. The firmware prints `no readback: the module has no MISO`; that is
-expected, not a failure.
-
-## 2. microSD card (SPI1)
-
-| microSD breakout | Proton | Notes |
+| Module pin | Proton pin | Notes |
 |---|---|---|
-| `VCC` | `3V3` | 3.3 V module only; no level shifter. |
-| `GND` | `GND` | Short lead, common ground. |
-| `MISO` / `DO` | `GP28` | SPI1 RX. |
-| `CS` / `SS` | `GP29` | Plain GPIO, active low. |
-| `SCK` / `CLK` | `GP30` | SPI1 SCK. |
-| `MOSI` / `DI` | `GP31` | SPI1 TX. |
-| `CD` | — | No card detect (`use_card_detect = false`). |
+| GND | GND | Common ground |
+| VCC | 3V3 | 3.3 V only |
+| SCL | GP2 | SPI0 SCK, not I2C |
+| SDA | GP3 | SPI0 MOSI, not I2C |
+| RST | GP5 | Active-low reset |
+| DC | GP4 | Command/data |
+| CS | GP14 | Active-low GPIO chip select |
+| BL | 3V3 | Always on; no PWM GPIO |
+| SDA-0 | NC | Leave unconnected; no MISO/readback |
 
-A 10 kΩ pull-up from `CS` to `3V3` is recommended by the driver vendor (the
-card may drive `CS` during power-up). It is optional for one card on a short
-bus. The card is initialized at 400 kHz and then switched to 25 MHz; lower it
-with `-DSTORAGE_SD_SPI_HZ=12500000` or `storage_set_spi_hz()` if the wiring is
-marginal.
+The ST7796 build retains its 480×320 landscape output, **75 MHz SPI0 default**
+and no-op backlight control. Readback/self-test is unsupported, not a failure.
+The alternative ILI9341 `pipod` build uses the same five SPI0/control pins,
+320×240 landscape, with SDO/MISO unconnected and LED/BL tied to 3V3;
+readback/self-test and backlight PWM must be disabled on this map. Check the
+ILI9341 module's regulator/jumper and backlight current requirements before
+powering it; do not connect its old GP32/GP38 leads.
 
-### Card format
+SPI0 (display) and SPI1 (SD) are independent PL022 blocks with independent
+dividers: display 75 MHz and SD 25 MHz can run simultaneously at the stock
+150 MHz peripheral clock. Both apps print `spi_get_baudrate()` for both buses
+after mounting (an absent card can leave SD at the slow initialisation rate).
+**75 MHz is an overclock, far above the ST7796 rated serial clock**, not a
+guaranteed operating point. Verify long-run stability on the breadboard with
+short wires and fast pad drive (12 mA, fast slew, enabled by default). Use
+**Settings → Display Clock → 37.5 MHz** if pixels corrupt or the panel stalls.
+ST7796 PiPod targets 60 FPS; ILI9341 stays at 30 FPS. `[perf]` reports achieved
+UI cadence, rendered/idle frames and SPI/DMA busy time; 60 FPS is a pacing
+target, not a promise of full-screen 60 Hz transfers over serial SPI.
 
-From the vendored FatFs configuration
-(`third_party/no-OS-FatFS/src/include/ffconf.h`):
+The ILI9341 driver accepts `ILI9341_GPIO_UNUSED` (0xFF) for MISO and BL.
+This map selects those defaults: no GPIO is configured for either signal,
+readback reports "no readback", and brightness control is a no-op. Supplying
+real MISO/BL pins retains readback self-test and PWM behaviour.
 
-* **FAT32** is recommended; **exFAT is supported** (`FF_FS_EXFAT = 1`).
-  FAT12/FAT16 also mount.
-* Long file names up to 255 UTF-8 characters (`FF_USE_LFN = 3`,
-  `FF_LFN_UNICODE = 2`); non-ASCII names work when written as UTF-8.
-* One volume on an MBR partition table, or a superfloppy with no partition
-  table. The first volume mounts as `0:`.
-* No journaling or replay: unmount / power off only when no file is open.
-* The PiPod only ever reads the card (`f_write()` and friends are never
-  called).
+## MPR121 capacitive touch breakout
 
-## 3. TTP223 touch pads
-
-Six momentary capacitive switches. Each module has `VCC`, `GND` and `OUT`.
-
-| Signal | Module OUT -> | UI action |
+| Module pin | Proton pin | Notes |
 |---|---|---|
-| slider LEFT | `GP2` | slider step, one wheel tick (with the UI's smooth scroll) |
-| slider MIDDLE | `GP3` | slider step |
-| slider RIGHT | `GP4` | slider step |
-| SELECT | `GP5` | `UI_BTN_SELECT` click / long press |
-| MENU | `GP6` | `UI_BTN_MENU` |
-| PLAY/PAUSE | `GP7` | `UI_BTN_PLAY_PAUSE` |
+| 3.3V | 3V3 | Supply and logic reference |
+| GND | GND | Common ground |
+| SDA | GP6 | I2C1 SDA |
+| SCL | GP7 | I2C1 SCL |
+| IRQ | GP12 | Active low, open drain; pull up to 3V3 |
+| ADD | GND | Approved address 0x5A |
+| Electrodes 0–10 | Bare wires | Arrange around a circle for now |
+| Electrode 11 | Bare wire | Centre electrode |
 
-Power each module from `3V3` and `GND`; `OUT` goes straight to the GPIO (no
-series resistor needed, but 100 Ω in series is harmless if the lead is long).
-
-Notes:
-
-* Default jumpers = **momentary, active high** (OUT high while touched). If a
-  module is configured active low, build with `-DPIPOD_TOUCH_ACTIVE_HIGH=0`.
-* **Do not touch any pad during power-up**: the modules self-calibrate then,
-  and a finger on a pad at that moment becomes the new "released" baseline.
-  Both `pipod` and `touchpad_test` print a reminder at boot.
-* The driver leaves the internal pulls **off**. The modules drive both levels
-  themselves, and the RP2350-E9 erratum makes internal pull-downs unreliable.
-* The slider is not a position sensor: only the order in which LEFT/MIDDLE/
-  RIGHT activate is decoded. Adjacent activations within 400 ms are one step;
-  holding the end pad repeats after 500 ms, then every 150 ms.
-
-## 4. Physical buttons
-
-Active high with **external 10 kΩ pull-downs** (the firmware disables internal
-pulls because of RP2350-E9). The two on-board Proton buttons already have
-pull-downs fitted.
-
-| Signal | GPIO | UI action | Pull-down |
-|---|---|---|---|
-| PREV | `GP8` | `UI_BTN_PREV` | external 10k-47k |
-| NEXT | `GP9` | `UI_BTN_NEXT` | external 10k-47k |
-| SELECT | `GP21` | `UI_BTN_SELECT` | on-board |
-| MENU | `GP26` | `UI_BTN_MENU` | on-board |
-
-The touch pads replace the old GP2/GP3/GP4 wheel and play/pause buttons, so the
-breadboard build passes its own button map (`apps/pipod/main.c`) and never uses
-`input_buttons_default_map()`.
-
-## 5. Reserved pins and free pins
-
-| GPIO | Use |
+| ADD connection | 7-bit I2C address |
 |---|---|
-| `GP0` / `GP1` | UART0 TX / RX, on-board debug probe |
-| `GP2`-`GP7` | TTP223 pads |
-| `GP8` / `GP9` | PREV / NEXT buttons |
-| `GP10`-`GP20` | free |
-| `GP21` | on-board SELECT |
-| `GP22`-`GP25` | on-board LEDs (red, yellow, green, blue), unused |
-| `GP26` | on-board MENU |
-| `GP27` | free |
-| `GP28`-`GP31` | microSD on SPI1 |
-| `GP32`-`GP38` | display SPI0 (`GP32`/`GP38` ILI9341 only) |
-| `GP39`-`GP47` | free; `GP40`-`GP47` are the RP2350B ADC pins |
+| GND | 0x5A |
+| 3V3 | 0x5B |
+| SDA | 0x5C |
+| SCL | 0x5D |
 
-## 6. Power notes
+**Do not tie ADD to 3V3 if the back solder jumper is bridged:** the jumper
+may already connect ADD to GND, causing a short. Inspect the breakout first.
+PiPod initialises and polls the MPR121 using this map. If it is missing, a
+UART warning is printed; on-board buttons and UART controls remain usable.
 
-* Supply the Proton from USB; do not back-feed `3V3` from another source.
-* Every module here is 3.3 V logic. Never drive a signal pin from 5 V.
-* ILI9341 `VCC`: check the module's `J1` jumper. With `J1` bridged, feed
-  `3V3` only; with `J1` open the module has its own regulator and can take 5 V.
-  Never feed 5 V into `VCC` with `J1` bridged.
-* The ST7796 backlight is tied to `3V3` and is always on; budget its current
-  (typically 100-200 mA) in the USB supply.
-* Keep `SCK`/`MOSI` leads under ~10 cm and run a ground return next to `SCK`.
-  A 33 Ω series resistor on `SCK` at the Proton end is a cheap damper if you
-  see speckled pixels.
-* Never hot-plug the display or the SD card while powered.
+## Bring-up order
 
-## 7. Build
+1. With power off, check wiring, common ground, ADD and the 3V3 supply.
+2. Flash `build_c1/apps/hw_test/hw_test.uf2`. **Do not touch the electrode
+   wires during power-up: the MPR121 calibrates then.**
+3. Check the ST7796 480×320 screen. The left side shows the SD mount result,
+   card type/capacity, recursive MP3 count, scan time and first five songs
+   (`title - artist`, filename fallback). A missing card or scan error is
+   shown without stopping the touch test. The walk is read-only and bounded
+   by the storage layer's 12-folder depth limit.
+4. Check the MPR121 status and all 12 numbered touch boxes: ELE0 at the top,
+   ELE1–ELE10 clockwise in a circle, ELE11 in the middle. Each touched electrode should highlight and appear in
+   `Pressed:`. UART0 prints press/release edges; `d` requests filtered/baseline
+   debug data, also printed every two seconds while touching.
+   The bottom line shows the live angle (tenths of a degree; `off` means no ring
+   contact), accumulated ticks and last decoded click/hold/scroll event.
+5. Flash `build_c1/apps/pipod/pipod_st7796.uf2` and check navigation using
+   the mapping below (also printed at boot).
 
-Configure once from the repository root (`D:/362Project`):
+### Real click-wheel wiring and gestures
+
+PCB footprint: `PiPod_ClickWheel_MPR121_48mm`; MPR121 ELEn connects to wheel
+pad n+1. Place bare wires the same way: **11 equal ring sectors**, ELE0
+centred at 12 o'clock, increasing **clockwise**, ELE11 at the centre.
+
+| Ring electrode | Clockwise angle from top | Tap / stationary hold function |
+|---|---|---|
+| ELE0 | 0° | MENU |
+| ELE1 | 32.7° | Scroll-only |
+| ELE2 | 65.5° | Scroll-only |
+| ELE3 | 98.2° | NEXT |
+| ELE4 | 130.9° | Scroll-only |
+| ELE5 | 163.6° | PLAY/PAUSE |
+| ELE6 | 196.4° | PLAY/PAUSE |
+| ELE7 | 229.1° | Scroll-only |
+| ELE8 | 261.8° | PREV |
+| ELE9 | 294.5° | Scroll-only |
+| ELE10 | 327.3° | Scroll-only |
+| ELE11 | Centre, not ring | SELECT (immediate edges) |
+
+| Gesture | Decoder output |
+|---|---|
+| Compass touch, release within 350 ms, excursion ≤25° | Button DOWN then UP (click), no scroll |
+| Compass stationary hold ≥500 ms | DOWN at 500 ms, UP on release; UI decides long press |
+| Compass touch moves >25° before hold commits | Scroll only; flush ticks accumulated since first movement, no button |
+| Starts on non-compass ring pad | Scroll immediately from first movement |
+| Clockwise / counter-clockwise slide | Positive / negative ticks, wrap-safe across 359°→0° |
+| Centre press / release | SELECT DOWN / UP; cancel ring candidate/hold and suppress ring while centre touched |
+
+Release between 350 and 500 ms produces no event. A committed hold stays a
+button until release (later movement does not scroll). UI long-press timing
+starts at the emitted DOWN, so the default 600 ms UI threshold fires about
+1100 ms after initial ring contact. NEXT/PREV seek, MENU goes home; PLAY's
+long action is whatever the UI implements (no new power menu is added).
+
+Defaults in `input_clickwheel_default_config`: 24 ticks/rev, 4° reversal
+hysteresis, 25° movement threshold, 350 ms tap, 500 ms hold, delta threshold
+6 sensor counts. Weighted circular centroid uses baseline−filtered (clamped
+at zero) on touched ring electrodes. Both apps poll at approximately 200 Hz.
+The config also maps clockwise ring electrode order, centre and per-electrode
+functions; no decoder changes are needed for another board layout.
+
+## microSD (SPI1)
+
+| Module pin | Proton pin | Notes |
+|---|---|---|
+| VCC | **5 V (VBUS)** | Our module has an AMS1117-3.3 regulator and a 74LVC125 buffer, so it needs 5 V in; at 3V3 the card gets ~2.2 V and mounts fail with FR_NOT_READY. The data pins stay 3.3 V. A bare module without a regulator goes on 3V3 instead |
+| GND | GND | Common ground |
+| MISO / DO | GP8 | SPI1 RX |
+| CS / SS | GP9 | Active-low GPIO; 10 kΩ pull-up to 3V3 recommended |
+| SCK / CLK | GP10 | SPI1 clock |
+| MOSI / DI | GP11 | SPI1 TX |
+| CD | NC | No card detect |
+
+Initialisation uses a slow clock, then 25 MHz. Use `storage_set_spi_hz()` to
+lower the running clock for marginal wiring. `sd_test` prints mount/card
+diagnostics and walks the card without writing it.
+Mount retries retain the existing 25 / 12.5 / 5 / 1 MHz sequence. The SD
+hardware config explicitly supplies `spi1`; the vendor driver uses that
+instance for transfers and divider changes, never the display's SPI0.
+
+### Music format
+
+Use **MP3, 44.1/48 kHz, CBR or VBR up to 320 kbps**. ID3v2.3 tags are
+recommended; use embedded **baseline JPEG** covers (not progressive JPEG).
+Format the card **FAT32 or exFAT**. Supported library limits: up to **12 folder
+levels, 512 songs, 128 albums and 128 artists**. The current fake player does
+not decode audio; the SD scan → flash pack → demo fallback is unchanged.
+
+## Optional TTP223 test slider (`touchpad_test` only)
+
+| Module pin | Proton pin | Notes |
+|---|---|---|
+| VCC (all three) | 3V3 | Default momentary, active-high modules |
+| GND (all three) | GND | Common ground |
+| OUT, pad 1 | GP27 | LEFT |
+| OUT, pad 2 | GP28 | MIDDLE |
+| OUT, pad 3 | GP29 | RIGHT |
+| SELECT / MENU / PLAY-PAUSE pads | NC | Unused, GPIO sentinel 0xFF |
+
+Do not touch pads during power-up self-calibration. The modules drive both
+levels, so internal pulls are disabled. PiPod itself does not initialise or
+poll these optional test pads.
+
+## On-board pins
+
+| Module pin | Proton pin | Notes |
+|---|---|---|
+| Debug probe UART RX | GP0 | UART0 TX, 115200 8N1 |
+| Debug probe UART TX | GP1 | UART0 RX |
+| SELECT button | GP21 | Active high, on-board pull-down |
+| MENU button | GP26 | Active high, on-board pull-down |
+| LEDs | GP22–25 | Unused |
+
+No external PREV/NEXT buttons remain. UART: `w`/`k`/Up = wheel −1,
+`s`/`j`/Down = wheel +1, Enter/`e` = select, `m`/Esc = menu,
+space = play/pause, `n`/Right = next, `p`/Left = previous, `h` = home,
+`P` = performance report.
+
+## TLV320DAC3100 reserved pins — not wired yet
+
+| Module pin / signal | Proton pin | Notes |
+|---|---|---|
+| Headphone detect | GP13 | Reserved; not wired yet |
+| DAC reset | GP15 | Reserved; not wired yet |
+| I2C0 SDA | GP16 | Reserved; not wired yet |
+| I2C0 SCL | GP17 | Reserved; not wired yet |
+| I2S DIN | GP18 | Reserved; not wired yet |
+| I2S WCLK | GP19 | Reserved; not wired yet |
+| I2S BCLK | GP20 | Reserved; not wired yet |
+
+Do not drive or initialise these signals before the DAC wiring task.
+
+## Rewiring checklist (power off first)
+
+1. Remove all six old TTP223 connections on GP2–7 and external PREV/NEXT
+   buttons on GP8/GP9. These pins now carry display, MPR121 and SD signals.
+2. Move display SCK GP34 → GP2, MOSI GP35 → GP3, DC GP36 → GP4,
+   RST GP37 → GP5, CS GP33 → GP14. Disconnect old MISO GP32 and PWM GP38;
+   connect BL to 3V3. Leave SDA-0 NC.
+3. Move SD MISO GP28 → GP8, CS GP29 → GP9, SCK GP30 → GP10,
+   MOSI GP31 → GP11.
+4. Wire MPR121 to GP6/GP7/GP12, ADD to GND; inspect its back jumper.
+5. Optionally reconnect only three TTP223 pads to GP27–29 for `touchpad_test`.
+6. Keep on-board GP21/GP26 unchanged. Leave GP13, GP15–20 reserved.
+7. Check continuity, 3V3/GND and shorts before powering up. Flash the correct
+   display UF2 and inspect UART diagnostics; test SD separately with `sd_test`.
+
+## Build
+
+Select `PIPOD_PINS=BREADBOARD` (default); all owned hardware targets use the
+same header. A future `PIPOD_PINS=PCB` requires `boards/pipod_pcb_pins.h`.
 
 ```sh
-cmake -S . -B build_int2 -G Ninja \
+cmake -S . -B build_c1 -G Ninja \
   -DCMAKE_MAKE_PROGRAM=C:/Users/ekagr/AppData/Local/Temp/banyancode/ninja/ninja.exe \
   -DPICO_SDK_PATH=D:/362Project/tools/pico-sdk \
   -DPICO_TOOLCHAIN_PATH=D:/362Project/tools/arm-gnu \
-  -DPICO_PLATFORM=rp2350-arm-s -DPICO_BOARD=proton
+  -DPICO_PLATFORM=rp2350-arm-s -DPICO_BOARD=proton \
+  -Dpicotool_DIR=D:/362Project/tools/picotool/picotool
+cmake --build build_c1
 ```
 
-Then build the image you need:
-
-```sh
-cmake --build build_int2 --target pipod           # ILI9341, 320x240
-cmake --build build_int2 --target pipod_st7796    # ST7796S, 480x320
-cmake --build build_int2 --target sd_test         # microSD bring-up (no display)
-cmake --build build_int2 --target touchpad_test   # TTP223 bring-up (no display)
-```
-
-Outputs land in `build_int2/apps/<app>/` (`<app>.elf`, `.uf2`, `.bin`, `.hex`,
-`.dis`). Flash one UF2 at a time:
-
-| UF2 | Use |
-|---|---|
-| `build_int2/apps/pipod/pipod.uf2` | full PiPod UI on the ILI9341 |
-| `build_int2/apps/pipod/pipod_st7796.uf2` | full PiPod UI on the ST7796S |
-| `build_int2/apps/sd_test/sd_test.uf2` | SD card test only |
-| `build_int2/apps/touchpad_test/touchpad_test.uf2` | touch pad test only |
-
-Hold `BOOTSEL`, plug the board in, and copy the UF2 to the `RP2350` drive (or
-`picotool load -x <path>.elf`). All four use **UART0 only** for stdio; open the
-debug probe's serial port at 115200 8N1.
-
-### Firmware size
-
-`pipod` and `pipod_st7796` both run
-`cmake/check_firmware_size.cmake`, which fails the build if the image would
-overlap the 1 MB media-pack region at `0x00100000`. The 480x320 precomputed
-asset set is large, so `pipod_st7796` leaves out the six generated demo covers
-(`PIPOD_DEMO_ART=0`) and uses the UI's built-in placeholder when the demo
-tables are the active library. SD-card and flash-pack album art is unaffected.
-Current sizes: `pipod` ~744 KB, `pipod_st7796` ~958 KB.
-
-## 8. Library source at boot
-
-`pipod` picks the first usable source on core 0, before core 1 starts (flash
-cache writes stall XIP):
-
-1. **microSD card**: mount `0:`, scan `0:/` recursively for
-   `.mp3/.flac/.wav/.ogg/.opus`, cache the index in the shared 1 MB flash
-   cache. Metadata only; no audio bytes are decoded.
-2. **Flash media pack** at `0x00100000` (e.g. `dist/test_songs.uf2`).
-3. **Built-in demo tables** (8 artists, 14 albums, 166 songs).
-
-The UART prints `[sd] ...` and `[media] <source>: N tracks, N albums, N
-artists from N files`, plus per-file `[scan]` lines. A second boot with the
-same card/pack is a cache hit (no tag parsing, no art decodes).
-
-## 9. Future PCB pin header
-
-The PCB revision plugs in by adding `boards/pipod_pcb_pins.h` with the same
-`PIPOD_PIN_*` names and rebuilding with `-DPIPOD_PINS=PCB`. Nothing else
-changes:
-
-* `apps/pipod/pipod_pins.h` includes whichever header `PIPOD_PINS_HEADER`
-  names (set by the top-level `CMakeLists.txt`), so `main.c` and the two test
-  apps compile unchanged.
-* The display config structs in `main.c` are filled from `PIPOD_PIN_DISPLAY_*`.
-* `lib/storage/storage_hw_config.c` uses `STORAGE_SD_PIN_*`, which default to
-  the breadboard numbers when no board header is selected and follow
-  `PIPOD_PIN_SD_*` when one is.
-* The compile-time collision check runs against the new header automatically.
-
-The current build rejects `-DPIPOD_PINS=PCB` with a clear error until that
-header exists; it is intentionally not guessed.
+UF2s are under `build_c1/apps/<app>/`. Firmware size checks retain the flash
+pack boundary at offset 0x100000. Flash only the intended display image.

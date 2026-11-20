@@ -1,6 +1,6 @@
 /**
  * @file main.c
- * @brief touchpad_test: bring-up tool for the six TTP223 capacitive pads.
+ * @brief touchpad_test: bring-up tool for three optional TTP223 slider pads.
  *
  * Prints the raw level and debounced state of every pad whenever a decoded
  * event happens (pad down/up, slider step, repeat, button down/up) and prints
@@ -22,6 +22,11 @@
 
 #include "input_touchpads.h"
 #include "ui.h"
+
+#ifndef INPUT_TOUCHPADS_GPIO_UNUSED
+/* TODO: remove fallback when the input worker's optional-pad API lands. */
+#define INPUT_TOUCHPADS_GPIO_UNUSED 0xFFu
+#endif
 
 #define POLL_INTERVAL_US 2000u
 
@@ -109,11 +114,9 @@ int main(void) {
     sleep_ms(100);
 
     printf("\n=== PiPod touchpad_test (TTP223) ===\n");
-    printf("[pins] slider LEFT GP%u MIDDLE GP%u RIGHT GP%u  buttons SELECT GP%u "
-           "MENU GP%u PLAY/PAUSE GP%u\n",
-           (unsigned)PIPOD_PIN_TOUCH_LEFT, (unsigned)PIPOD_PIN_TOUCH_MIDDLE,
-           (unsigned)PIPOD_PIN_TOUCH_RIGHT, (unsigned)PIPOD_PIN_TOUCH_SELECT,
-           (unsigned)PIPOD_PIN_TOUCH_MENU, (unsigned)PIPOD_PIN_TOUCH_PLAY_PAUSE);
+    printf("[pins] slider LEFT GP%u MIDDLE GP%u RIGHT GP%u; button pads unused\n",
+           (unsigned)PIPOD_PIN_TTP223_1, (unsigned)PIPOD_PIN_TTP223_2,
+           (unsigned)PIPOD_PIN_TTP223_3);
     printf("[touch] do not touch any pad during power-up calibration\n");
     printf("[touch] VCC 3.3 V, GND, OUT -> GPIO; default jumpers = active high "
            "(PIPOD_TOUCH_ACTIVE_HIGH=%u)\n",
@@ -121,12 +124,12 @@ int main(void) {
 
     input_touchpads_config_t cfg;
     input_touchpads_default_config(&cfg);
-    cfg.slider_left_gpio = (uint8_t)PIPOD_PIN_TOUCH_LEFT;
-    cfg.slider_middle_gpio = (uint8_t)PIPOD_PIN_TOUCH_MIDDLE;
-    cfg.slider_right_gpio = (uint8_t)PIPOD_PIN_TOUCH_RIGHT;
-    cfg.button_select_gpio = (uint8_t)PIPOD_PIN_TOUCH_SELECT;
-    cfg.button_menu_gpio = (uint8_t)PIPOD_PIN_TOUCH_MENU;
-    cfg.button_play_pause_gpio = (uint8_t)PIPOD_PIN_TOUCH_PLAY_PAUSE;
+    cfg.slider_left_gpio = (uint8_t)PIPOD_PIN_TTP223_1;
+    cfg.slider_middle_gpio = (uint8_t)PIPOD_PIN_TTP223_2;
+    cfg.slider_right_gpio = (uint8_t)PIPOD_PIN_TTP223_3;
+    cfg.button_select_gpio = INPUT_TOUCHPADS_GPIO_UNUSED;
+    cfg.button_menu_gpio = INPUT_TOUCHPADS_GPIO_UNUSED;
+    cfg.button_play_pause_gpio = INPUT_TOUCHPADS_GPIO_UNUSED;
     cfg.active_high = (PIPOD_TOUCH_ACTIVE_HIGH != 0);
     cfg.internal_pulls = false; /* TTP223 drives both levels; RP2350-E9 */
     cfg.event_cb = on_event;

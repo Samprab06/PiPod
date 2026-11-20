@@ -345,6 +345,9 @@ static void apply_pin_drive(bool fast) {
 }
 
 static void backlight_init(void) {
+    if (s.cfg.pin_bl == ILI9341_GPIO_UNUSED) {
+        return;
+    }
     gpio_set_function(s.cfg.pin_bl, GPIO_FUNC_PWM);
     uint slice = pwm_gpio_to_slice_num(s.cfg.pin_bl);
     pwm_config cfg = pwm_get_default_config();
@@ -453,7 +456,9 @@ bool ili9341_init(const ili9341_config_t *cfg) {
 
     gpio_set_function(s.cfg.pin_sck, GPIO_FUNC_SPI);
     gpio_set_function(s.cfg.pin_mosi, GPIO_FUNC_SPI);
-    gpio_set_function(s.cfg.pin_miso, GPIO_FUNC_SPI);
+    if (s.cfg.pin_miso != ILI9341_GPIO_UNUSED) {
+        gpio_set_function(s.cfg.pin_miso, GPIO_FUNC_SPI);
+    }
 
     /* Configure the pads before the first high-speed clock edge. */
     apply_pin_drive(s.cfg.fast_pins);
@@ -490,7 +495,7 @@ bool ili9341_init(const ili9341_config_t *cfg) {
      * ID bytes), so probe the status registers instead. A false result can
      * simply mean MISO/SDO is not wired; the panel still works write-only. */
     ili9341_selftest_t st;
-    return ili9341_self_test(&st);
+    return !ili9341_has_readback() || ili9341_self_test(&st);
 }
 
 uint32_t ili9341_set_spi_clock(uint32_t hz) {
@@ -793,7 +798,7 @@ static bool raw16_alive(uint16_t raw) {
 }
 
 uint32_t ili9341_read_id(void) {
-    if (!s.initialised) {
+    if (!ili9341_has_readback()) {
         return 0;
     }
 
@@ -808,7 +813,7 @@ uint32_t ili9341_read_id(void) {
 }
 
 uint8_t ili9341_read_reg8(uint8_t cmd) {
-    if (!s.initialised) {
+    if (!ili9341_has_readback()) {
         return 0;
     }
     return decode_reg8(read_reg_raw16(cmd));
@@ -817,7 +822,7 @@ uint8_t ili9341_read_reg8(uint8_t cmd) {
 bool ili9341_read_pixels(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t *out) {
     /* The scratch buffer holds ILI9341_READ_STRIP_ROWS rows of the panel width;
      * wider windows would overflow it and cannot be valid on this panel. */
-    if (!s.initialised || out == NULL || w == 0u || h == 0u || w > (uint16_t)ILI9341_WIDTH) {
+    if (!ili9341_has_readback() || out == NULL || w == 0u || h == 0u || w > (uint16_t)ILI9341_WIDTH) {
         return false;
     }
 
@@ -883,12 +888,16 @@ bool ili9341_read_pixels(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_
     return live;
 }
 
+bool ili9341_has_readback(void) {
+    return s.initialised && s.cfg.pin_miso != ILI9341_GPIO_UNUSED;
+}
+
 bool ili9341_self_test(ili9341_selftest_t *out) {
     if (out == NULL) {
         return false;
     }
     memset(out, 0, sizeof *out);
-    if (!s.initialised) {
+    if (!ili9341_has_readback()) {
         return false;
     }
 
@@ -928,7 +937,7 @@ bool ili9341_self_test(ili9341_selftest_t *out) {
 }
 
 void ili9341_set_backlight(uint8_t percent) {
-    if (!s.initialised) {
+    if (!s.initialised || s.cfg.pin_bl == ILI9341_GPIO_UNUSED) {
         return;
     }
     uint32_t p = percent > 100u ? 100u : percent;

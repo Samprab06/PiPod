@@ -126,6 +126,9 @@ const char *storage_status_str(int status);
 /** @brief Human-readable FatFs FRESULT text ("FR_OK", "FR_NO_FILESYSTEM", ...). */
 const char *storage_fr_str(int fr);
 
+/** FatFs result of the last mount attempt (FRESULT as int; see storage_fr_str()). */
+int storage_last_fr(void);
+
 /**
  * @brief Print a mount/card/root-directory diagnostic on the UART.
  *

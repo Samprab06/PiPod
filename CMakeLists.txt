@@ -51,6 +51,12 @@ function(pipod_apply_pin_header target)
 endfunction()
 
 add_subdirectory(lib/display)
+foreach(panel ili9341 st7796)
+    pipod_apply_pin_header(${panel})
+    # Config headers are public and are also included by stand-alone tests.
+    target_include_directories(${panel} PUBLIC "${PIPOD_PINS_DIR}")
+    target_compile_definitions(${panel} PUBLIC PIPOD_PINS_HEADER="${PIPOD_PINS_HEADER}")
+endforeach()
 
 # Optional layers owned by other workstreams: only build them when present.
 add_subdirectory(third_party/tjpgd)
@@ -76,6 +82,7 @@ add_subdirectory(apps/motion_test)
 # Breadboard bring-up tools (UART stdio only, no display required).
 if(TARGET storage AND TARGET media)
     add_subdirectory(apps/sd_test)
+    add_subdirectory(apps/hw_test)
 endif()
 if(TARGET input AND TARGET ui)
     add_subdirectory(apps/touchpad_test)

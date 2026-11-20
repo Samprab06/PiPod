@@ -24,6 +24,7 @@
 #include <stdio.h>
 
 #include "hardware/clocks.h"
+#include "hardware/spi.h"
 #include "pico/critical_section.h"
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
@@ -39,14 +40,19 @@
 
 #include "audio_load_sim.h"
 #include "input_buttons.h"
-#include "input_touchpads.h"
+#include "input_mpr121.h"
+#include "input_clickwheel.h"
 #include "input_uart.h"
 #include "input_wheel.h"
 #include "sim_library.h"
 #include "sim_player.h"
 
+#if PIPOD_DISPLAY_ST7796
+#define UI_TARGET_FPS   60u
+#else
 #define UI_TARGET_FPS   30u
-#define POLL_INTERVAL_US 2000u /**< button + touchpad poll cadence */
+#endif
+#define POLL_INTERVAL_US 5000u /**< 200 Hz input poll cadence */
 #define REPORT_INTERVAL_US 5000000u
 #define FRAME_INTERVAL_US (1000000u / UI_TARGET_FPS)
 
@@ -71,16 +77,60 @@ static bool                  g_media_active;
 
 /* --- board input maps --------------------------------------------------- */
 
-/* The old lib/input default map occupies GP2/GP3/GP4, which are the TTP223
- * slider pads on this breadboard, so the app owns its button map: only PREV
- * and NEXT are physical buttons; SELECT and MENU stay on the on-board Proton
- * buttons (GP21 / GP26). */
+/* Only on-board buttons remain; GP8/GP9 now belong to microSD.
+ * Never use the legacy library default map on this wiring. */
 static const input_button_map_t k_breadboard_buttons[] = {
-    { .gpio = PIPOD_PIN_BTN_PREV, .ui_button = UI_BTN_PREV, .active_high = true },
-    { .gpio = PIPOD_PIN_BTN_NEXT, .ui_button = UI_BTN_NEXT, .active_high = true },
     { .gpio = PIPOD_PIN_BTN_ONBOARD_SELECT, .ui_button = UI_BTN_SELECT, .active_high = true },
     { .gpio = PIPOD_PIN_BTN_ONBOARD_MENU, .ui_button = UI_BTN_MENU, .active_high = true },
 };
+
+static input_clickwheel_t s_clickwheel;
+static void clickwheel_ticks(int16_t ticks, void *user) {
+    (void)user;
+    (void)ui_post_wheel(ticks);
+}
+static void clickwheel_button(input_clickwheel_button_t button, bool down, void *user) {
+    (void)user;
+    static const ui_button_t map[] = {UI_BTN_COUNT, UI_BTN_MENU, UI_BTN_NEXT,
+        UI_BTN_PLAY_PAUSE, UI_BTN_PREV, UI_BTN_SELECT};
+    if ((unsigned)button < count_of(map)) (void)ui_post_button(map[button], down);
+}
+
+static void init_mpr121(void) {
+    input_mpr121_config_t cfg;
+    input_mpr121_default_config(&cfg);
+    cfg.i2c = PIPOD_MPR121_I2C;
+    cfg.sda_gpio = PIPOD_PIN_MPR121_SDA;
+    cfg.scl_gpio = PIPOD_PIN_MPR121_SCL;
+    cfg.irq_gpio = PIPOD_PIN_MPR121_IRQ;
+    cfg.address = PIPOD_MPR121_ADDRESS;
+    cfg.poll_interval_us = 5000;
+    input_clickwheel_init(&s_clickwheel, NULL, clickwheel_ticks, clickwheel_button, NULL);
+    if (!input_mpr121_init(&cfg)) {
+        printf("[input] WARNING: MPR121 not found/configured (I2C %d); "
+               "on-board buttons and UART remain available\n",
+               input_mpr121_last_i2c_error());
+    } else {
+        printf("[input] MPR121 found at 0x%02X\n", input_mpr121_found_address());
+    }
+    printf("[input] ELE0..10: ring clockwise from top, 360/11 deg per sector; ELE11: SELECT\n");
+    printf("[input] top E0 MENU; right E3 NEXT; bottom E5/E6 PLAY/PAUSE; left E8 PREV\n");
+    printf("[input] tap <=350 ms; hold down at 500 ms; move >25 deg scroll; 24 ticks/rev\n");
+}
+
+static void poll_mpr121(void) {
+    input_mpr121_poll();
+    uint16_t delta[12] = {0};
+    bool valid = input_mpr121_present();
+    for (uint8_t i = 0; valid && i < 12; ++i) {
+        uint16_t baseline, filtered;
+        valid = input_mpr121_baseline(i, &baseline) &&
+                input_mpr121_filtered_data(i, &filtered);
+        if (valid) delta[i] = baseline > filtered ? baseline - filtered : 0;
+    }
+    input_clickwheel_feed(&s_clickwheel, delta,
+        valid ? input_mpr121_touched_mask() : 0, (uint32_t)(time_us_64() / 1000u));
+}
 
 /* --- core 1: display + UI ---------------------------------------------- */
 
@@ -149,7 +199,11 @@ static void print_perf_report(void) {
     } else {
         uint32_t slots = p.ui.frames + p.ui.idle_frames;
         uint32_t fps10 = (p.ui.elapsed_ms != 0u) ? (slots * 10000u / p.ui.elapsed_ms) : 0u;
-        printf("[perf] ui: %lu.%lu fps  cpu %lu%%  frames %lu  idle %lu  "
+        uint32_t rendered10 = p.ui.elapsed_ms ? p.ui.frames * 10000u / p.ui.elapsed_ms : 0u;
+        printf("[perf] achieved render %lu.%lu fps; target %u fps\n",
+               (unsigned long)(rendered10 / 10u), (unsigned long)(rendered10 % 10u),
+               (unsigned)UI_TARGET_FPS);
+        printf("[perf] ui: %lu.%lu fps (achieved task cadence)  cpu %lu%%  frames %lu  idle %lu  "
                "frame avg %lu us  max %lu us  px/frame avg %lu  dma wait %lu us  "
                "dropped %lu\n",
                (unsigned long)(fps10 / 10u), (unsigned long)(fps10 % 10u),
@@ -162,7 +216,7 @@ static void print_perf_report(void) {
                (unsigned long)p.gfx.frames, (unsigned long)p.gfx.rects,
                (unsigned long)p.gfx.bands, (unsigned long)p.gfx.pixels,
                (unsigned long)p.gfx.last_render_us, (unsigned long)p.gfx.max_render_us);
-        printf("[perf] %s: %lu bytes  %lu xfers  dma busy %lu us\n", display_name(),
+        printf("[perf] %s: %lu bytes  %lu xfers  SPI/DMA busy %lu us\n", display_name(),
                (unsigned long)p.panel.bytes_sent, (unsigned long)p.panel.transfers,
                (unsigned long)p.panel.dma_busy_us);
     }
@@ -343,15 +397,14 @@ static void print_banner(void) {
     printf("clk_sys: %lu Hz\n", (unsigned long)clock_get_hz(clk_sys));
     printf("core 0: input + simulated audio; core 1: display + UI\n");
     printf("uart0: GP0 TX / GP1 RX, 115200 8N1 (debug probe)\n");
-    printf("buttons (active high): GP8 prev, GP9 next, GP21 select, GP26 menu\n");
-    printf("TTP223: slider GP2/GP3/GP4, select GP5, menu GP6, play/pause GP7\n");
-    printf("display: CS GP33 SCK GP34 MOSI GP35 DC GP36 RST GP37");
-#if PIPOD_DISPLAY_ST7796
-    printf(" (BL tied to 3V3, no MISO)\n");
-#else
-    printf(", MISO GP32, BL GP38\n");
-#endif
-    printf("microSD: SPI1 MISO GP28 CS GP29 SCK GP30 MOSI GP31\n");
+    printf("buttons (active high): GP%u select, GP%u menu\n",
+           PIPOD_PIN_BTN_ONBOARD_SELECT, PIPOD_PIN_BTN_ONBOARD_MENU);
+    printf("display: CS GP%u SCK GP%u MOSI GP%u DC GP%u RST GP%u "
+           "(BL tied to 3V3, no MISO)\n", PIPOD_PIN_DISPLAY_CS,
+           PIPOD_PIN_DISPLAY_SCK, PIPOD_PIN_DISPLAY_MOSI,
+           PIPOD_PIN_DISPLAY_DC, PIPOD_PIN_DISPLAY_RST);
+    printf("microSD: SPI1 MISO GP%u CS GP%u SCK GP%u MOSI GP%u\n",
+           PIPOD_PIN_SD_MISO, PIPOD_PIN_SD_CS, PIPOD_PIN_SD_SCK, PIPOD_PIN_SD_MOSI);
 }
 
 /* --- input setup -------------------------------------------------------- */
@@ -359,28 +412,6 @@ static void print_banner(void) {
 static void init_buttons(void) {
     input_buttons_init(k_breadboard_buttons,
                        sizeof(k_breadboard_buttons) / sizeof(k_breadboard_buttons[0]), 5);
-}
-
-static void init_touchpads(void) {
-    input_touchpads_config_t tcfg;
-    input_touchpads_default_config(&tcfg);
-
-    tcfg.slider_left_gpio = (uint8_t)PIPOD_PIN_TOUCH_LEFT;
-    tcfg.slider_middle_gpio = (uint8_t)PIPOD_PIN_TOUCH_MIDDLE;
-    tcfg.slider_right_gpio = (uint8_t)PIPOD_PIN_TOUCH_RIGHT;
-    tcfg.button_select_gpio = (uint8_t)PIPOD_PIN_TOUCH_SELECT;
-    tcfg.button_menu_gpio = (uint8_t)PIPOD_PIN_TOUCH_MENU;
-    tcfg.button_play_pause_gpio = (uint8_t)PIPOD_PIN_TOUCH_PLAY_PAUSE;
-
-    /* TTP223 modules drive both levels (momentary, active high with the
-     * default jumpers). The RP2350-E9 erratum makes internal pull-downs
-     * unreliable, so leave the pads floating as the modules intend. */
-    tcfg.active_high = (PIPOD_TOUCH_ACTIVE_HIGH != 0);
-    tcfg.internal_pulls = false;
-
-    input_touchpads_init(&tcfg);
-    printf("[touch] TTP223 pads on GP2..GP7 armed (active_high=%u, internal_pulls=0)\n",
-           PIPOD_TOUCH_ACTIVE_HIGH ? 1u : 0u);
 }
 
 /* --- main --------------------------------------------------------------- */
@@ -391,11 +422,6 @@ int main(void) {
 
     print_banner();
 
-    /* The TTP223 modules self-calibrate at power-up; remind the operator
-     * before any pad can be sampled. */
-    printf("[touch] do not touch the TTP223 pads during power-up calibration "
-           "(GP2..GP7)\n");
-
     /* Display: pins come from the board header and override the driver's
      * compile-time defaults through the runtime config. */
     display_config_t dcfg;
@@ -405,13 +431,14 @@ int main(void) {
     dcfg.pin_mosi = (uint)PIPOD_PIN_DISPLAY_MOSI;
     dcfg.pin_dc = (uint)PIPOD_PIN_DISPLAY_DC;
     dcfg.pin_rst = (uint)PIPOD_PIN_DISPLAY_RST;
-#if !PIPOD_DISPLAY_ST7796
+#if !PIPOD_DISPLAY_ST7796 && defined(PIPOD_PIN_DISPLAY_MISO)
     dcfg.pin_miso = (uint)PIPOD_PIN_DISPLAY_MISO;
+#endif
+#if !PIPOD_DISPLAY_ST7796 && defined(PIPOD_PIN_DISPLAY_BL)
     dcfg.pin_bl = (uint)PIPOD_PIN_DISPLAY_BL;
 #endif
-
     const bool display_ok = display_init(&dcfg);
-    display_selftest_t st;
+    display_selftest_t st = {0};
     const display_selftest_result_t selftest = display_self_test(&st);
 
     printf("[display] %s init %s  SPI %lu Hz  %ux%u landscape\n", display_name(),
@@ -431,7 +458,7 @@ int main(void) {
     critical_section_init(&g_perf_cs);
 
     init_buttons();
-    init_touchpads();
+    init_mpr121();
     input_wheel_init(INPUT_WHEEL_DEFAULT_TICKS_PER_REV, INPUT_WHEEL_DEFAULT_HYSTERESIS_DEG10);
     input_uart_init();
     input_uart_set_perf_hook(perf_hook);
@@ -441,6 +468,12 @@ int main(void) {
     /* Mount/scan the card, then the pack, then the demo tables. Must stay
      * before core 1 exists: flash writes stall XIP. */
     init_media_library();
+    /* Read the independent hardware dividers after SD mounting/fallback.
+     * A missing card can leave SPI1 at its low initialisation clock. */
+    printf("[clocks] spi_get_baudrate: SPI0 display %lu Hz; SPI1 SD %lu Hz "
+           "(target 25000000; mount fallback allowed)\n",
+           (unsigned long)spi_get_baudrate(spi0),
+           (unsigned long)spi_get_baudrate(spi1));
     sim_player_set_library(g_library, g_media_active ? &g_media_lib : NULL);
 
     /* Start the fake 1 ms audio tick only after the scan: the flash erase and
@@ -478,7 +511,7 @@ int main(void) {
 
     for (;;) {
         input_buttons_poll();
-        input_touchpads_poll();
+        poll_mpr121();
         input_uart_poll();
         sim_player_update();
         audio_sim_busy_work();

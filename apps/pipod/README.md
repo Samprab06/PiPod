@@ -36,7 +36,7 @@ skipped at configure time when the required targets do not exist yet.
 The board pin map is selected by `PIPOD_PINS` (default `BREADBOARD`, which
 resolves `boards/pipod_breadboard_pins.h`). A future PCB revision adds
 `boards/pipod_pcb_pins.h` and builds with `-DPIPOD_PINS=PCB`; see
-[docs/breadboard_pinout.md](../../docs/breadboard_pinout.md) §9.
+[docs/breadboard_pinout.md](../../docs/breadboard_pinout.md), Build.
 
 The POST_BUILD size check fails the build if an image would grow past 1 MB
 (the media pack starts at flash offset 0x100000). The 480x320 asset set is
@@ -67,35 +67,22 @@ Music can come from either source:
 The on-board debug probe exposes UART0 (GP0 TX, GP1 RX) at **115200 8N1**.
 Open it with any serial terminal (`putty -serial COMx`, `screen /dev/ttyACM0
 115200`, `minicom`, ...). The banner prints the clock, pin map, the panel name
-and the actual SPI clock; on the ILI9341 build `0x009341` is a genuine
-ILI9341, and the ST7796 build prints `no readback` because the module has no
-MISO.
+and the actual SPI clock. The final-PCB-aligned breadboard has no display MISO
+and ties the backlight to 3V3; see the canonical wiring guide for both panels.
 
 ## Controls
 
-TTP223 touch pads (momentary, active high; do not touch them while the board
-powers up, they self-calibrate then):
-
-| Pad | GPIO | UI action |
-|---|---|---|
-| slider LEFT / MIDDLE / RIGHT | GP2 / GP3 / GP4 | slide one direction = one wheel tick (smooth scroll), hold to repeat |
-| SELECT | GP5 | SELECT click / long press |
-| MENU | GP6 | MENU |
-| PLAY/PAUSE | GP7 | PLAY/PAUSE click |
-
-Physical buttons (active high, **external 10 k pull-downs required** — RP2350-E9
-makes internal pull-downs unreliable), plus the two on-board Proton buttons:
+Only the two on-board Proton buttons are initialised (active high):
 
 | Signal | GPIO | UI action |
 |---|---|---|
-| previous | GP8 | PREV |
-| next | GP9 | NEXT |
 | select | GP21 (on-board) | SELECT |
 | menu | GP26 (on-board) | MENU |
 
-The old GP2/GP3/GP4 wheel buttons are gone from this build: those pins are the
-slider now, and the app passes its own button map instead of
-`input_buttons_default_map()`.
+The old six TTP223 pads on GP2–7 and PREV/NEXT buttons on GP8/GP9 are removed.
+Those pins now serve the display, MPR121 and microSD. MPR121 init/poll hooks
+are left for a later task; UART remains available for wheel/playback controls.
+Three optional TTP223 pads on GP27–29 are used only by `touchpad_test`.
 
 UART keys (sent to the same serial console):
 

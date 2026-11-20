@@ -7,7 +7,7 @@
  * vendored tree stays untouched.
  *
  * Proton breadboard wiring (see lib/storage/README.md):
- *   SPI1, MISO GP28, CS GP29, SCK GP30, MOSI GP31, no card-detect pin.
+ *   SPI1, MISO GP8, CS GP9, SCK GP10, MOSI GP11, no card-detect pin.
  *
  * The pins are STORAGE_SD_PIN_* below. When the application defines
  * PIPOD_PINS_HEADER (the PiPod apps do, through
@@ -29,35 +29,21 @@
 
 #if defined(PIPOD_PINS_HEADER)
 #include PIPOD_PINS_HEADER
+#else
+#include "../../boards/pipod_breadboard_pins.h"
 #endif
 
 #ifndef STORAGE_SD_PIN_MISO
-#if defined(PIPOD_PIN_SD_MISO)
 #define STORAGE_SD_PIN_MISO PIPOD_PIN_SD_MISO
-#else
-#define STORAGE_SD_PIN_MISO 28
-#endif
 #endif
 #ifndef STORAGE_SD_PIN_CS
-#if defined(PIPOD_PIN_SD_CS)
 #define STORAGE_SD_PIN_CS PIPOD_PIN_SD_CS
-#else
-#define STORAGE_SD_PIN_CS 29
-#endif
 #endif
 #ifndef STORAGE_SD_PIN_SCK
-#if defined(PIPOD_PIN_SD_SCK)
 #define STORAGE_SD_PIN_SCK PIPOD_PIN_SD_SCK
-#else
-#define STORAGE_SD_PIN_SCK 30
-#endif
 #endif
 #ifndef STORAGE_SD_PIN_MOSI
-#if defined(PIPOD_PIN_SD_MOSI)
 #define STORAGE_SD_PIN_MOSI PIPOD_PIN_SD_MOSI
-#else
-#define STORAGE_SD_PIN_MOSI 31
-#endif
 #endif
 
 static spi_t s_spi = {

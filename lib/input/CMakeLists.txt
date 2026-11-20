@@ -9,6 +9,8 @@ add_library(input STATIC
     input_wheel.c
     input_uart.c
     input_touchpads.c
+    input_mpr121.c
+    input_clickwheel.c
 )
 
 target_include_directories(input PUBLIC ${CMAKE_CURRENT_LIST_DIR})
@@ -28,6 +30,7 @@ endif()
 target_link_libraries(input PUBLIC
     pico_stdlib
     hardware_gpio
+    hardware_i2c
     m
 )
 
@@ -41,3 +44,13 @@ target_link_libraries(input PUBLIC
 #       -I lib/input -I lib/ui -I lib/gfx \
 #       lib/input/test/touchpads_host_test.c lib/input/input_touchpads.c \
 #       -o build/touchpads_host_test
+#
+# Clickwheel pure-logic test:
+#   gcc -std=c11 -Wall -Wextra -Werror -O2 -I lib/input \
+#       lib/input/test/clickwheel_host_test.c lib/input/input_clickwheel.c -lm \
+#       -o build_c1/clickwheel_host_test
+#
+# MPR121 fake-register-map test (no Pico SDK):
+#   gcc -std=c11 -Wall -Wextra -Werror -O2 -DINPUT_MPR121_HOST -I lib/input \
+#       lib/input/test/mpr121_host_test.c lib/input/input_mpr121.c \
+#       -o build_m1/mpr121_host_test
